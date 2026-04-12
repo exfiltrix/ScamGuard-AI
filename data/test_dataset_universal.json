@@ -1,0 +1,322 @@
+{
+  "metadata": {
+    "version": "2.0",
+    "created": "2026-04-11",
+    "description": "Универсальный тестовый датасет для оценки ScamGuard AI (ВСЕ типы мошенничества)",
+    "total_samples": 30,
+    "scam_samples": 15,
+    "suspicious_samples": 8,
+    "safe_samples": 7,
+    "scam_types": ["rental", "investment", "romance", "phishing", "job", "fake_seller", "charity", "tech_support"]
+  },
+  "listings": [
+    {
+      "id": 1,
+      "category": "scam",
+      "scam_type": "rental",
+      "text": "СРОЧНО! 2-комнатная квартира в центре Ташкента, только 800,000 сум! Только сегодня! Последний шанс! Требуется 100% предоплата на карту. Без просмотра. Паспорт не нужен. Звоните только по WhatsApp: +998901234567. Хозяин за границей.",
+      "ground_truth_score": 95,
+      "ground_truth_flags": ["price_too_low", "urgency", "prepayment_full", "no_viewing", "no_documents", "owner_abroad", "messenger_only"],
+      "is_scam": true,
+      "notes": "Классическая схема мошенничества в аренде"
+    },
+    {
+      "id": 2,
+      "category": "scam",
+      "scam_type": "investment",
+      "text": "🔥 УНИКАЛЬНАЯ ВОЗМОЖНОСТЬ! Вложи 1000$ - получи 10,000$ через месяц! ГАРАНТИРОВАННО! Уже 500 человек заработали! Наша система торговли на Форекс приносит 300% прибыли! Приведи 3 друзей и получишь бонус 500$! Успей до конца недели!",
+      "ground_truth_score": 98,
+      "ground_truth_flags": ["unrealistic_returns", "guaranteed_profit", "pyramid_scheme", "urgency", "referral_bonus"],
+      "is_scam": true,
+      "notes": "Финансовая пирамида / MLM схема"
+    },
+    {
+      "id": 3,
+      "category": "scam",
+      "scam_type": "romance",
+      "text": "Привет дорогая! Я так сильно влюбился в тебя, хотя мы знакомы всего неделю! Ты особенная, я никого такой не встречал! У меня срочная проблема - моя мама в больнице, нужна операция за 2000$. Банк отказал в кредите. Ты единственная кто может помочь! Обещаю вернуть через месяц когда приеду к тебе!",
+      "ground_truth_score": 92,
+      "ground_truth_flags": ["fast_relationship", "emotional_manipulation", "emergency_money", "promise_to_return", "love_bombing"],
+      "is_scam": true,
+      "notes": "Романтическое мошенничество"
+    },
+    {
+      "id": 4,
+      "category": "scam",
+      "scam_type": "phishing",
+      "text": "⚠️ ВНИМАНИЕ! Ваш банковский аккаунт заблокирован из-за подозрительной активности! Для разблокировки СРОЧНО отправьте код из SMS который мы только что выслали. У вас есть 2 часа, иначе счет будет закрыт и деньги изъяты! Служба безопасности Uzcard.",
+      "ground_truth_score": 99,
+      "ground_truth_flags": ["urgency_extreme", "sms_code_request", "account_block_threat", "impersonation", "fear_manipulation"],
+      "is_scam": true,
+      "notes": "Фишинг банковских данных"
+    },
+    {
+      "id": 5,
+      "category": "scam",
+      "scam_type": "job",
+      "text": "💼 Требуются менеджеры для работы на дому! Зарплата 2500$/месяц! Без опыта! Гибкий график! Работа простая - ввод данных. Единственное условие: оплатите доступ к нашей платформе 200$ и пройдите обучение за 100$. После оплаты сразу начинаете зарабатывать! Гарантируем первую зарплату через неделю!",
+      "ground_truth_score": 93,
+      "ground_truth_flags": ["pay_for_access", "pay_for_training", "unrealistic_salary", "no_experience_needed", "guaranteed_payment"],
+      "is_scam": true,
+      "notes": "Поддельная работа с предоплатой"
+    },
+    {
+      "id": 6,
+      "category": "scam",
+      "scam_type": "fake_seller",
+      "text": "Продаю iPhone 15 Pro Max 1TB за 350$!!! Новый в коробке с пломбами! Много заказов, решайте быстрее! Оплата 100% на карту, завтра привезу. Нахожусь в другом городе. Не упустите шанс! Обычная цена 1500$, продаю дешево потому что срочно нужны деньги.",
+      "ground_truth_score": 96,
+      "ground_truth_flags": ["price_unrealistic", "full_prepayment", "urgency", "another_city", "too_good_to_be_true"],
+      "is_scam": true,
+      "notes": "Поддельный продавец электроники"
+    },
+    {
+      "id": 7,
+      "category": "scam",
+      "scam_type": "charity",
+      "text": "🙏 ПОМОГИТЕ СПАСТИ ЖИЗНЬ! 4-летнему Азизу нужна срочная операция на сердце за границей! Стоимость 15,000$! Каждая минута на счету! Родители продали все что могли, не хватает последних 5000$. Переводите на карту: 8600... Без вашей помощи ребенок умрет! Пожалуйста, не проходите мимо!",
+      "ground_truth_score": 85,
+      "ground_truth_flags": ["emotional_manipulation", "urgency_life_death", "personal_card", "no_organization", "large_amount"],
+      "is_scam": true,
+      "notes": "Поддельная благотворительность"
+    },
+    {
+      "id": 8,
+      "category": "scam",
+      "scam_type": "tech_support",
+      "text": "🚨 КРИТИЧЕСКАЯ УГРОЗА! Ваш компьютер заражен опасным вирусом Trojan.Win32! Обнаружено 47 угроз! Ваши личные данные, пароли и банковские карты под угрозой! Немедленно позвоните в службу технической поддержки Microsoft: +1-800-FAKE-NUM. НЕ ВЫКЛЮЧАЙТЕ КОМПЬЮТЕР! Специалист удаленно очистит систему.",
+      "ground_truth_score": 88,
+      "ground_truth_flags": ["fake_virus_warning", "urgency", "call_fake_support", "impersonation_microsoft", "fear_tactics"],
+      "is_scam": true,
+      "notes": "Поддельная тех поддержка"
+    },
+    {
+      "id": 9,
+      "category": "scam",
+      "scam_type": "phishing",
+      "text": "🎉 Поздравляем! Вы выиграли iPhone 15 Pro в розыгрыше Telegram Premium! Для получения приза: 1) Оплатите доставку 30$ по ссылке: t.me/fake-prize-bot 2) Отправьте скан паспорта для подтверждения личности. Срок получения приза - 48 часов, потом он сгорит!",
+      "ground_truth_score": 91,
+      "ground_truth_flags": ["unexpected_prize", "pay_for_delivery", "passport_request", "suspicious_link", "urgency_deadline"],
+      "is_scam": true,
+      "notes": "Фейковый выигрыш"
+    },
+    {
+      "id": 10,
+      "category": "scam",
+      "scam_type": "rental",
+      "text": "Сдаю квартиру без посредников. 2к, центр. 1,200,000 сум. Документы в порядке. Бронь - 500,000 сум на карту прямо сейчас, иначе сдам другому клиенту. Приезжайте завтра с остальными деньгами. Адрес скажу после перевода брони. Много звонков, решайте быстрее!",
+      "ground_truth_score": 94,
+      "ground_truth_flags": ["prepayment_booking", "address_after_payment", "urgency", "pressure_other_clients", "no_viewing_first"],
+      "is_scam": true,
+      "notes": "Адрес после оплаты = классический red flag"
+    },
+    {
+      "id": 11,
+      "category": "scam",
+      "scam_type": "investment",
+      "text": "📈 Крипто-бот для автоматической торговли! Делает 10% ЕЖЕДНЕВНО! Минимальный депозит 500$. Уже 2000+ пользователей зарабатывают! Алгоритм использует AI и машинное обучение. 100% гарантия возврата инвестиций. Регистрируйся по ссылке и получи бонус 100$!",
+      "ground_truth_score": 97,
+      "ground_truth_flags": ["unrealistic_daily_returns", "minimum_deposit", "ai_buzzwords", "guarantee_impossible", "bonus_for_registration"],
+      "is_scam": true,
+      "notes": "Крипто-пирамида"
+    },
+    {
+      "id": 12,
+      "category": "scam",
+      "scam_type": "romance",
+      "text": "Я военный врач из США, служу в Сирии. Увидел твое фото и не смог оторвать взгляд. Ты самая красивая женщина которую я видел! Хочу приехать к тебе в отпуск, но нужны деньги на билет (1500$) и документы (500$). У меня все деньги заморожены на военном счету. Помоги, пожалуйста! Обещаю сразу вернуть когда приеду!",
+      "ground_truth_score": 95,
+      "ground_truth_flags": ["military_scam", "cant_meet", "money_for_ticket", "frozen_money_excuse", "love_at_first_sight"],
+      "is_scam": true,
+      "notes": "Военный мошенник"
+    },
+    {
+      "id": 13,
+      "category": "scam",
+      "scam_type": "job",
+      "text": "Удаленная работа: сборка ручек на дому! 3000$/месяц! Получаете материалы, собираете, отправляете обратно. Оплата за каждую ручку 5$. Нужно только оплатить первую партию материалов 250$ и доставку 50$. После этого работайте сколько хотите! Заработок неограничен!",
+      "ground_truth_score": 90,
+      "ground_truth_flags": ["pay_for_materials", "unrealistic_pay_per_item", "unlimited_earning_claim", "upfront_payment"],
+      "is_scam": true,
+      "notes": "Сборка изделий на дому - классика"
+    },
+    {
+      "id": 14,
+      "category": "scam",
+      "scam_type": "fake_seller",
+      "text": "PlayStation 5 + 10 игр за 200$! Срочная продажа! Уезжаю из страны! Новая, в упаковке! Оплата на Uzcard, доставлю сегодня вечером. Или могу отправить в регионы транспортной компанией. Много желающих, первый кто переведет - тому и продам!",
+      "ground_truth_score": 93,
+      "ground_truth_flags": ["price_too_low", "leaving_country_excuse", "urgency", "prepayment_required", "delivery_after_payment"],
+      "is_scam": true,
+      "notes": "Поддельная продажа консоли"
+    },
+    {
+      "id": 15,
+      "category": "scam",
+      "scam_type": "phishing",
+      "text": "Uzum Market: Ваш заказ #12345 задержан на складе. Для получения необходимо подтвердить данные карты. Перейдите по ссылке: uzum-verification.tk и введите номер карты, срок действия и CVV код. Заказ будет отменен через 24 часа!",
+      "ground_truth_score": 96,
+      "ground_truth_flags": ["suspicious_domain", "card_data_request", "cvv_request", "urgency_24h", "impersonation_company"],
+      "is_scam": true,
+      "notes": "Фишинг данных карты"
+    },
+    {
+      "id": 16,
+      "category": "suspicious",
+      "scam_type": "rental",
+      "text": "Сдаю 2-комнатную квартиру в Яккасарае. Хороший ремонт, 60м2. Цена 2,500,000 сум/мес. Можно без депозита если оплатите 2 месяца сразу. Хозяин за границей, но есть доверенное лицо. Документы при встрече. Тел: +998901234567",
+      "ground_truth_score": 48,
+      "ground_truth_flags": ["owner_abroad", "two_months_prepay", "no_deposit_unusual"],
+      "is_scam": false,
+      "notes": "Подозрительно (владелец за границей), но есть контакт и возможность встречи"
+    },
+    {
+      "id": 17,
+      "category": "suspicious",
+      "scam_type": "investment",
+      "text": "Инвестируй в недвижимость! Покупаем квартиры на стадии строительства, продаем после сдачи. Средняя прибыль 30% годовых. Минимальная сумма 5000$. Компания работает 5 лет, есть офис и лицензия. Но гарантий на прибыль дать не можем - это инвестиции.",
+      "ground_truth_score": 35,
+      "ground_truth_flags": ["high_return_rate", "minimum_investment", "no_guarantee_honest"],
+      "is_scam": false,
+      "notes": "Может быть легально, но риски есть. Честно говорят про отсутствие гарантий"
+    },
+    {
+      "id": 18,
+      "category": "suspicious",
+      "scam_type": "job",
+      "text": "Требуется SMM-менеджер на удаленку. Зарплата 1500$/мес + бонусы. Опыт от 1 года. Сначала тестовый период 2 недели за 300$. Если подходите - оформляем официально. Компания реальная, есть сайт и соцсети.",
+      "ground_truth_score": 42,
+      "ground_truth_flags": ["paid_test_period", "high_salary"],
+      "is_scam": false,
+      "notes": "Оплачиваемый тестовый период странный, но компания проверяемая"
+    },
+    {
+      "id": 19,
+      "category": "suspicious",
+      "scam_type": "fake_seller",
+      "text": "MacBook Pro M3 за 1200$. Пользовался 3 месяца, все чеки сохранены. Продаю потому что купил более мощную модель для работы. Встреча в людном месте, проверка при покупке. Оплата наличными или через Click. Торг возможен.",
+      "ground_truth_score": 25,
+      "ground_truth_flags": ["price_slightly_low"],
+      "is_scam": false,
+      "notes": "Цена ниже новой, но адекватна для б/у. Условия безопасные"
+    },
+    {
+      "id": 20,
+      "category": "suspicious",
+      "scam_type": "romance",
+      "text": "Привет! Понравился твой профиль. Хочу познакомиться. Я из Самарканда, работаю программистом. Можем пообщаться, познакомиться ближе. Если понравимся друг другу - встретимся. Хочу серьезных отношений.",
+      "ground_truth_score": 15,
+      "ground_truth_flags": [],
+      "is_scam": false,
+      "notes": "Обычное знакомство, нет красных флагов"
+    },
+    {
+      "id": 21,
+      "category": "suspicious",
+      "scam_type": "charity",
+      "text": "Благотворительный фонд 'Mehr' собирает средства на помощь детям из малообеспеченных семей. Лицензия №12345. Реквизиты: ООО 'Фонд Mehr', ИНН 123456789. Отчеты публикуются на сайте mehr.uz. Каждое пожертвование помогает!",
+      "ground_truth_score": 20,
+      "ground_truth_flags": [],
+      "is_scam": false,
+      "notes": "Официальная организация с реквизитами и отчетностью"
+    },
+    {
+      "id": 22,
+      "category": "suspicious",
+      "scam_type": "rental",
+      "text": "1-комнатная квартира, Чиланзар, 35м2. 2,000,000/мес. Мебель частично. Хозяйка пожилая, плохо слышит - лучше пишите дочери в WhatsApp: +998901234567. Просмотр в любое время. Договор через нотариуса.",
+      "ground_truth_score": 30,
+      "ground_truth_flags": ["contact_via_relative"],
+      "is_scam": false,
+      "notes": "Связь через родственника объяснима. Нотариальный договор - хороший знак"
+    },
+    {
+      "id": 23,
+      "category": "suspicious",
+      "scam_type": "investment",
+      "text": "Вложения в криптовалюту через наш фонд. Диверсифицированный портфель из топ-10 монет. Средняя доходность за 2025: +45%. Риски есть - можете потерять вложения. Минимум 1000$. Лицензия AFSA, офис в Дубае. Прозрачная отчетность.",
+      "ground_truth_score": 40,
+      "ground_truth_flags": ["crypto_investment", "minimum_amount", "offshore_company"],
+      "is_scam": false,
+      "notes": "Честно говорят про риски, есть лицензия. Но offshore - внимательно проверяйте"
+    },
+    {
+      "id": 24,
+      "category": "safe",
+      "scam_type": "rental",
+      "text": "Сдается 2-комнатная квартира в Мирзо-Улугбекском районе. Площадь: 65 кв.м, этаж: 3 из 9, ремонт: евроремонт 2022 года. Полностью меблирована: холодильник, стиральная машина, кондиционер. Рядом метро Буюк Ипак Йули (5 мин пешком). Цена: 3,500,000 сум/месяц, депозит: 3,500,000 сум (возвратный). Документы в порядке, официальный договор. Контакты: Мирзаев Алишер, +998 90 123-45-67, alisher@example.com. Просмотр в любое время.",
+      "ground_truth_score": 8,
+      "ground_truth_flags": [],
+      "is_scam": false,
+      "notes": "Идеальное объявление: детали, документы, контакты, адекватная цена"
+    },
+    {
+      "id": 25,
+      "category": "safe",
+      "scam_type": "rental",
+      "text": "Агентство недвижимости 'Уютный Дом' предлагает квартиру в новостройке (2023). 2 комнаты, 58 кв.м, 7 этаж из 12. Яшнабадский район. Цена: 3,200,000 сум/месяц, депозит 1 месяц. Лицензия №12345, офис: ул. Навои, 45. Тел: +998 71 123-45-67. Сайт: uyutnydom.uz.",
+      "ground_truth_score": 5,
+      "ground_truth_flags": [],
+      "is_scam": false,
+      "notes": "Официальное агентство с лицензией"
+    },
+    {
+      "id": 26,
+      "category": "safe",
+      "scam_type": "job",
+      "text": "Компания 'TechCorp' ищет Junior Python разработчика. Зарплата 1000$/мес, растет с опытом. Требования: знание Python, базовый English. Офис в Ташкенте, гибридный формат. Официальное оформление, соцпакет. Резюме на email: hr@techcorp.uz. Сайт компании с портфолио: techcorp.uz",
+      "ground_truth_score": 5,
+      "ground_truth_flags": [],
+      "is_scam": false,
+      "notes": "Нормальная вакансия от реальной компании"
+    },
+    {
+      "id": 27,
+      "category": "safe",
+      "scam_type": "fake_seller",
+      "text": "Продаю свой iPhone 13, 128GB, синий. Пользовался 1.5 года, состояние отличное, батарея 89%. Цена 4,000,000 сум (новый стоит 8,000,000). В комплекте зарядка и чехол. Встреча в Apple Store или другом удобном месте. Можно проверить перед покупкой. Оплата наличными или Click. Тел: +998 90 123-45-67",
+      "ground_truth_score": 10,
+      "ground_truth_flags": [],
+      "is_scam": false,
+      "notes": "Честная продажа б/у телефона с разумными условиями"
+    },
+    {
+      "id": 28,
+      "category": "safe",
+      "scam_type": "investment",
+      "text": "Банковский депозит в Uzcard Bank. Ставка 18% годовых в сумах. Минимальная сумма 1,000,000 сум. Срок от 6 месяцев. Застрахован Фондом гарантирования вкладов до 200,000,000 сум. Проценты ежемесячно или в конце срока. Офис: ул. Амира Темура 15. Лицензия ЦБ РУз.",
+      "ground_truth_score": 5,
+      "ground_truth_flags": [],
+      "is_scam": false,
+      "notes": "Официальный банковский депозит"
+    },
+    {
+      "id": 29,
+      "category": "safe",
+      "scam_type": "charity",
+      "text": "БФ 'Саховат' (ИНН 123456789) оказывает помощь детям-сиротам. Лицензия Минюста №678. Реквизиты: р/с 12345 в Народном Банке. Отчеты на сайте sahovat.uz. Контакты: info@sahovat.uz, +998 71 234-56-78. Офис: ул. Бунёдкор 12, каждый день 9-18.",
+      "ground_truth_score": 5,
+      "ground_truth_flags": [],
+      "is_scam": false,
+      "notes": "Официальный благотворительный фонд с прозрачностью"
+    },
+    {
+      "id": 30,
+      "category": "safe",
+      "scam_type": "romance",
+      "text": "Привет! Меня зовут Азиз, 28 лет, живу и работаю в Ташкенте. Увидел твой профиль, понравился. Давай познакомимся, пообщаемся. Я программист, люблю спорт и путешествия. Если понравимся друг другу, будем встречаться. Ищу серьезные отношения, создание семьи.",
+      "ground_truth_score": 5,
+      "ground_truth_flags": [],
+      "is_scam": false,
+      "notes": "Нормальное знакомство без подозрительных признаков"
+    }
+  ],
+  "evaluation_notes": {
+    "scam_detection_threshold": 70,
+    "suspicious_threshold": 40,
+    "safe_threshold": 30,
+    "expected_precision": "85%+",
+    "expected_recall": "90%+",
+    "key_challenge": "Различать подозрительное от явно мошеннического"
+  }
+}
