@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScamGuard AI - Защита от мошенников</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 800px;
+            width: 100%;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+            animation: fadeIn 0.8s ease-in;
+        }
+
+        .logo {
+            font-size: 4em;
+            margin-bottom: 10px;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .tagline {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .main-card {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            animation: slideUp 0.8s ease-out;
+        }
+
+        .input-group {
+            margin-bottom: 30px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        input[type="url"] {
+            width: 100%;
+            padding: 15px 20px;
+            font-size: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            transition: all 0.3s;
+        }
+
+        input[type="url"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .analyze-btn {
+            width: 100%;
+            padding: 18px;
+            font-size: 18px;
+            font-weight: 600;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .analyze-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .analyze-btn:active {
+            transform: translateY(0);
+        }
+
+        .analyze-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 30px 0;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        .result {
+            display: none;
+            margin-top: 30px;
+            padding: 30px;
+            border-radius: 15px;
+            animation: fadeIn 0.5s ease-in;
+        }
+
+        .result.low-risk {
+            background: #d4edda;
+            border-left: 5px solid #28a745;
+        }
+
+        .result.medium-risk {
+            background: #fff3cd;
+            border-left: 5px solid #ffc107;
+        }
+
+        .result.high-risk {
+            background: #f8d7da;
+            border-left: 5px solid #dc3545;
+        }
+
+        .risk-score {
+            font-size: 3em;
+            font-weight: bold;
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .risk-bar {
+            height: 30px;
+            background: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+
+        .risk-bar-fill {
+            height: 100%;
+            transition: width 1s ease-out;
+            border-radius: 15px;
+        }
+
+        .low-risk .risk-bar-fill {
+            background: linear-gradient(90deg, #28a745, #20c997);
+        }
+
+        .medium-risk .risk-bar-fill {
+            background: linear-gradient(90deg, #ffc107, #ff9800);
+        }
+
+        .high-risk .risk-bar-fill {
+            background: linear-gradient(90deg, #dc3545, #c82333);
+        }
+
+        .red-flags {
+            margin: 20px 0;
+        }
+
+        .red-flag-item {
+            padding: 10px 15px;
+            margin: 10px 0;
+            background: rgba(0,0,0,0.05);
+            border-radius: 8px;
+            border-left: 3px solid #dc3545;
+        }
+
+        .recommendations {
+            margin: 20px 0;
+        }
+
+        .recommendation-item {
+            padding: 10px 15px;
+            margin: 10px 0;
+            background: rgba(0,0,0,0.05);
+            border-radius: 8px;
+            border-left: 3px solid #667eea;
+        }
+
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 40px;
+        }
+
+        .feature {
+            text-align: center;
+            color: white;
+            padding: 20px;
+        }
+
+        .feature-icon {
+            font-size: 3em;
+            margin-bottom: 10px;
+        }
+
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 40px;
+            opacity: 0.9;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">🛡️</div>
+            <h1>ScamGuard AI</h1>
+            <p class="tagline">Предотвращаем мошенничество до потерянных денег</p>
+        </div>
+
+        <div class="main-card">
+            <h2 style="margin-bottom: 20px; text-align: center;">Проверьте объявление на мошенничество</h2>
+            
+            <div class="input-group">
+                <label for="listingUrl">Ссылка на объявление</label>
+                <input 
+                    type="url" 
+                    id="listingUrl" 
+                    placeholder="https://t.me/channel/12345 или https://example.com/listing"
+                    required
+                >
+            </div>
+
+            <button class="analyze-btn" onclick="analyzeListing()">
+                🔍 Проверить безопасность
+            </button>
+
+            <div class="error" id="error"></div>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Анализирую объявление...</p>
+                <p style="color: #666; margin-top: 10px;">Это может занять 15-20 секунд</p>
+            </div>
+
+            <div class="result" id="result">
+                <h3 style="text-align: center; margin-bottom: 20px;">Результат анализа</h3>
+                
+                <div class="risk-score" id="riskScore">-</div>
+                <div class="risk-bar">
+                    <div class="risk-bar-fill" id="riskBarFill" style="width: 0%"></div>
+                </div>
+                <p style="text-align: center; font-weight: 600; font-size: 1.2em;" id="riskLevel">-</p>
+
+                <div class="red-flags">
+                    <h4>⚠️ Обнаруженные проблемы:</h4>
+                    <div id="redFlagsList"></div>
+                </div>
+
+                <div class="recommendations">
+                    <h4>💡 Рекомендации:</h4>
+                    <div id="recommendationsList"></div>
+                </div>
+
+                <div style="margin-top: 30px; text-align: center;">
+                    <button class="analyze-btn" onclick="resetForm()">
+                        Проверить другое объявление
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="features">
+            <div class="feature">
+                <div class="feature-icon">🤖</div>
+                <h3>AI Анализ</h3>
+                <p>GPT-4 Vision для глубокого анализа</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">📸</div>
+                <h3>Проверка фото</h3>
+                <p>Детекция поддельных изображений</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">💰</div>
+                <h3>Анализ цен</h3>
+                <p>Сравнение с рыночными ценами</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">⚡</div>
+                <h3>Быстро</h3>
+                <p>Результат за 15 секунд</p>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>© 2026 ScamGuard AI | Защищаем людей от мошенников</p>
+            <p style="margin-top: 10px;">
+                <a href="http://localhost:8000/docs" target="_blank" style="color: white; text-decoration: none;">API Docs</a> | 
+                <a href="#" style="color: white; text-decoration: none;">Telegram Bot</a>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        async function analyzeListing() {
+            const urlInput = document.getElementById('listingUrl');
+            const url = urlInput.value.trim();
+
+            if (!url) {
+                showError('Пожалуйста, введите ссылку на объявление');
+                return;
+            }
+
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                showError('Ссылка должна начинаться с http:// или https://');
+                return;
+            }
+
+            // Hide previous results
+            document.getElementById('result').style.display = 'none';
+            document.getElementById('error').style.display = 'none';
+            
+            // Show loading
+            document.getElementById('loading').style.display = 'block';
+            document.querySelector('.analyze-btn').disabled = true;
+
+            try {
+                const response = await fetch('http://localhost:8000/api/v1/analyze', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        url: url
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Ошибка анализа');
+                }
+
+                const result = await response.json();
+                displayResult(result);
+
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+                document.querySelector('.analyze-btn').disabled = false;
+            }
+        }
+
+        function displayResult(data) {
+            const resultDiv = document.getElementById('result');
+            const riskScore = data.risk_score;
+            const riskLevel = data.risk_level;
+
+            // Set risk class
+            resultDiv.className = 'result ' + riskLevel + '-risk';
+
+            // Display score
+            document.getElementById('riskScore').textContent = riskScore + '/100';
+            
+            // Animate risk bar
+            setTimeout(() => {
+                document.getElementById('riskBarFill').style.width = riskScore + '%';
+            }, 100);
+
+            // Display risk level
+            const levelText = {
+                'low': '🟢 Низкий риск',
+                'medium': '🟡 Средний риск',
+                'high': '🔴 Высокий риск'
+            };
+            document.getElementById('riskLevel').textContent = levelText[riskLevel] || riskLevel;
+
+            // Display red flags
+            const flagsList = document.getElementById('redFlagsList');
+            flagsList.innerHTML = '';
+            if (data.red_flags && data.red_flags.length > 0) {
+                data.red_flags.forEach(flag => {
+                    const div = document.createElement('div');
+                    div.className = 'red-flag-item';
+                    div.innerHTML = `<strong>${flag.category}:</strong> ${flag.description}`;
+                    flagsList.appendChild(div);
+                });
+            } else {
+                flagsList.innerHTML = '<p style="color: #28a745;">✅ Проблем не обнаружено</p>';
+            }
+
+            // Display recommendations
+            const recsList = document.getElementById('recommendationsList');
+            recsList.innerHTML = '';
+            if (data.recommendations && data.recommendations.length > 0) {
+                data.recommendations.forEach(rec => {
+                    const div = document.createElement('div');
+                    div.className = 'recommendation-item';
+                    div.textContent = rec;
+                    recsList.appendChild(div);
+                });
+            }
+
+            // Show result
+            resultDiv.style.display = 'block';
+            
+            // Scroll to result
+            resultDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = '❌ ' + message;
+            errorDiv.style.display = 'block';
+        }
+
+        function resetForm() {
+            document.getElementById('listingUrl').value = '';
+            document.getElementById('result').style.display = 'none';
+            document.getElementById('error').style.display = 'none';
+            document.getElementById('riskBarFill').style.width = '0%';
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        // Allow Enter key to submit
+        document.getElementById('listingUrl').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                analyzeListing();
+            }
+        });
+    </script>
+</body>
+</html>

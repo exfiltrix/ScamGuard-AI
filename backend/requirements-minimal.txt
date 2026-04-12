@@ -1,0 +1,10 @@
+# Minimal requirements for Python 3.14 (no compilation needed)
+fastapi
+uvicorn
+aiogram
+google-generativeai
+beautifulsoup4
+httpx
+requests
+python-dotenv
+loguru
