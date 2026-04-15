@@ -47,7 +47,7 @@ class ListingData(BaseModel):
     price: Optional[float] = None
     currency: Optional[str] = None
     location: Optional[str] = None
-    images: List[str] = []
+    images: List[Any] = []  # Can be URLs (str) or image bytes
     contact_info: Dict[str, str] = {}
     metadata: Dict[str, Any] = {}
     raw_html: Optional[str] = None

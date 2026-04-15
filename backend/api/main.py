@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +15,6 @@ from backend.config import get_settings
 from backend.evaluation.metrics import ModelEvaluator
 from loguru import logger
 import sys
-import json
 
 # Configure logging
 logger.remove()
@@ -21,10 +22,22 @@ logger.add(sys.stderr, level="INFO")
 logger.add("logs/app.log", rotation="500 MB", level="DEBUG")
 
 settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Initialize application resources on startup."""
+    logger.info("Starting ScamGuard AI API")
+    await init_db()
+    logger.info("Database initialized")
+    yield
+
+
 app = FastAPI(
     title="ScamGuard AI API",
     description="AI-powered rental listing scam detection with multi-module pipeline",
-    version="0.2.0"
+    version="0.2.0",
+    lifespan=lifespan,
 )
 
 # CORS middleware
@@ -46,12 +59,9 @@ if frontend_path.exists():
     app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup"""
-    logger.info("Starting ScamGuard AI API")
-    await init_db()
-    logger.info("Database initialized")
+def serialize_red_flags(result: AnalysisResult) -> list[dict]:
+    """Convert Pydantic red flags to plain dictionaries for DB storage."""
+    return [flag.model_dump() for flag in result.red_flags]
 
 
 @app.get("/")
@@ -118,7 +128,7 @@ async def analyze_listing(
             location=listing_data.location,
             risk_score=result.risk_score,
             risk_level=result.risk_level.value,
-            red_flags=[flag.dict() for flag in result.red_flags],
+            red_flags=serialize_red_flags(result),
             recommendations=result.recommendations,
             details=result.details
         )
@@ -146,29 +156,56 @@ async def get_user_history(
     """Get analysis history for a user"""
     try:
         from sqlalchemy import select
-        
-        stmt = select(Analysis).where(
+
+        listing_stmt = select(Analysis).where(
             Analysis.user_id == user_id
         ).order_by(
             Analysis.created_at.desc()
         ).limit(limit)
-        
-        result = await db.execute(stmt)
-        analyses = result.scalars().all()
-        
+
+        message_stmt = select(MessageAnalysis).where(
+            MessageAnalysis.user_id == user_id
+        ).order_by(
+            MessageAnalysis.created_at.desc()
+        ).limit(limit)
+
+        listing_result = await db.execute(listing_stmt)
+        message_result = await db.execute(message_stmt)
+
+        listing_analyses = listing_result.scalars().all()
+        message_analyses = message_result.scalars().all()
+
+        history = [
+            {
+                "id": a.id,
+                "type": "listing",
+                "url": a.url,
+                "summary": a.title or a.url,
+                "risk_score": a.risk_score,
+                "risk_level": a.risk_level,
+                "created_at": a.created_at.isoformat(),
+            }
+            for a in listing_analyses
+        ] + [
+            {
+                "id": m.id,
+                "type": "message",
+                "url": f"message://{m.id}",
+                "summary": (m.message_text or "")[:120] or "Telegram message",
+                "risk_score": m.risk_score,
+                "risk_level": m.risk_level,
+                "created_at": m.created_at.isoformat(),
+            }
+            for m in message_analyses
+        ]
+
+        history.sort(key=lambda item: item["created_at"], reverse=True)
+        history = history[:limit]
+
         return {
             "user_id": user_id,
-            "count": len(analyses),
-            "history": [
-                {
-                    "id": a.id,
-                    "url": a.url,
-                    "risk_score": a.risk_score,
-                    "risk_level": a.risk_level,
-                    "created_at": a.created_at.isoformat(),
-                }
-                for a in analyses
-            ]
+            "count": len(history),
+            "history": history,
         }
         
     except Exception as e:
@@ -216,25 +253,48 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     """Get overall statistics"""
     try:
         from sqlalchemy import select, func
-        
-        # Total analyses
-        total_stmt = select(func.count(Analysis.id))
-        total_result = await db.execute(total_stmt)
-        total_analyses = total_result.scalar()
-        
-        # Risk level distribution
-        risk_stmt = select(
+
+        listing_total_stmt = select(func.count(Analysis.id))
+        message_total_stmt = select(func.count(MessageAnalysis.id))
+        listing_total_result = await db.execute(listing_total_stmt)
+        message_total_result = await db.execute(message_total_stmt)
+        listing_total = listing_total_result.scalar() or 0
+        message_total = message_total_result.scalar() or 0
+        total_analyses = listing_total + message_total
+
+        listing_risk_stmt = select(
             Analysis.risk_level,
             func.count(Analysis.id)
         ).group_by(Analysis.risk_level)
-        risk_result = await db.execute(risk_stmt)
-        risk_distribution = {row[0]: row[1] for row in risk_result.all()}
-        
-        # Average risk score
-        avg_stmt = select(func.avg(Analysis.risk_score))
-        avg_result = await db.execute(avg_stmt)
-        avg_risk_score = avg_result.scalar() or 0
-        
+
+        message_risk_stmt = select(
+            MessageAnalysis.risk_level,
+            func.count(MessageAnalysis.id)
+        ).group_by(MessageAnalysis.risk_level)
+
+        listing_risk_result = await db.execute(listing_risk_stmt)
+        message_risk_result = await db.execute(message_risk_stmt)
+
+        risk_distribution = {}
+        for level, count in listing_risk_result.all():
+            risk_distribution[level] = risk_distribution.get(level, 0) + count
+        for level, count in message_risk_result.all():
+            risk_distribution[level] = risk_distribution.get(level, 0) + count
+
+        listing_avg_stmt = select(func.avg(Analysis.risk_score))
+        message_avg_stmt = select(func.avg(MessageAnalysis.risk_score))
+        listing_avg_result = await db.execute(listing_avg_stmt)
+        message_avg_result = await db.execute(message_avg_stmt)
+        listing_avg = listing_avg_result.scalar()
+        message_avg = message_avg_result.scalar()
+
+        weighted_sum = 0.0
+        if listing_avg is not None:
+            weighted_sum += float(listing_avg) * listing_total
+        if message_avg is not None:
+            weighted_sum += float(message_avg) * message_total
+        avg_risk_score = weighted_sum / total_analyses if total_analyses else 0
+
         return {
             "total_analyses": total_analyses,
             "risk_distribution": risk_distribution,
@@ -351,7 +411,7 @@ async def analyze_message(
             photo_count=len(photos_bytes),
             risk_score=result.risk_score,
             risk_level=result.risk_level.value,
-            red_flags=[flag.dict() for flag in result.red_flags],
+            red_flags=serialize_red_flags(result),
             recommendations=result.recommendations,
             details=result.details
         )
@@ -419,9 +479,14 @@ async def analyze_message_quick(
             photo_count=1 if request.has_photos else 0,
             risk_score=result.risk_score,
             risk_level=result.risk_level.value,
-            red_flags=[flag.dict() for flag in result.red_flags],
+            red_flags=serialize_red_flags(result),
             recommendations=result.recommendations,
-            details={**result.details, "analysis_type": "quick_check", "pending_deep_analysis": True}
+            details={
+                **result.details,
+                "analysis_type": "quick_check",
+                "pending_deep_analysis": True,
+                "is_quick_check": True,
+            }
         )
 
         db.add(analysis_record)
@@ -462,6 +527,8 @@ async def get_message_by_id(
         if not message_record:
             raise HTTPException(status_code=404, detail="Сообщение не найдено")
 
+        record_details = message_record.details or {}
+
         return {
             "id": message_record.id,
             "user_id": message_record.user_id,
@@ -471,7 +538,10 @@ async def get_message_by_id(
             "photo_count": message_record.photo_count,
             "risk_score": message_record.risk_score,
             "risk_level": message_record.risk_level,
-            "analysis_type": message_record.details.get('analysis_type', 'unknown'),
+            "red_flags": message_record.red_flags,
+            "recommendations": message_record.recommendations,
+            "details": record_details,
+            "analysis_type": record_details.get('analysis_type', 'unknown'),
             "created_at": message_record.created_at.isoformat(),
         }
 
@@ -566,10 +636,11 @@ async def analyze_message_deep(
             if existing_record:
                 existing_record.risk_score = result.risk_score
                 existing_record.risk_level = result.risk_level.value
-                existing_record.red_flags = [flag.dict() for flag in result.red_flags]
+                existing_record.red_flags = serialize_red_flags(result)
                 existing_record.recommendations = result.recommendations
                 existing_record.details = {**result.details, "analysis_type": "deep_analysis"}
                 await db.commit()
+                result.details["message_id"] = existing_record.id
                 logger.info(f"Updated deep analysis for message_id={request.message_id}")
         else:
             # Create new record
@@ -581,13 +652,14 @@ async def analyze_message_deep(
                 photo_count=len(photos_bytes),
                 risk_score=result.risk_score,
                 risk_level=result.risk_level.value,
-                red_flags=[flag.dict() for flag in result.red_flags],
+                red_flags=serialize_red_flags(result),
                 recommendations=result.recommendations,
                 details={**result.details, "analysis_type": "deep_analysis"}
             )
 
             db.add(analysis_record)
             await db.commit()
+            result.details["message_id"] = analysis_record.id
 
         logger.info(f"✅ Deep analysis completed: risk_score={result.risk_score}")
 
