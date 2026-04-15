@@ -11,7 +11,9 @@ from loguru import logger
 import sys
 import io
 import re
+import base64
 from datetime import datetime
+from pathlib import Path
 
 # Configure logging
 logger.remove()
@@ -28,32 +30,312 @@ dp = Dispatcher(storage=storage)
 # API endpoint
 API_URL = f"http://localhost:{settings.api_port}/api/v1"
 
+SUPPORTED_LANGUAGES = {"ru", "en"}
 
-def escape_markdown(text: str) -> str:
+
+TRANSLATIONS = {
+    "ru": {
+        "menu_analyze": "🔍 Проверить сообщение",
+        "menu_my_stats": "📊 Моя статистика",
+        "menu_global_stats": "📈 Общая статистика",
+        "menu_logs": "📋 Логи бота",
+        "menu_help": "❓ Помощь",
+        "menu_about": "ℹ️ О проекте",
+        "main_menu_title": "🏠 <b>Главное меню</b>\n\nВыберите действие:",
+        "start_welcome": """🛡️ <b>Добро пожаловать в ScamGuard AI, {user_name}!</b>
+
+Я защищаю вас от онлайн-мошенников! 🚨
+
+<b>🤖 Что я умею:</b>
+• Анализирую подозрительные сообщения
+• Проверяю вложения и файлы
+• Даю оценку риска 0-100
+• Объясняю, почему сообщение выглядит опасным
+
+<b>⚡ Как это работает:</b>
+1️⃣ Получили подозрительное сообщение или файл?
+2️⃣ Перешлите его мне
+3️⃣ Я сделаю быструю проверку
+4️⃣ При необходимости запущу глубокий AI анализ
+
+<b>Поддерживается:</b>
+• Пересланные сообщения
+• Обычный текст
+• Фотографии
+• Файлы
+• Ссылки на объявления
+
+Просто отправьте сообщение или нажмите кнопку ниже.""",
+        "analyze_prompt": """📨 <b>Перешлите подозрительное сообщение</b>
+
+Поддерживаются:
+• Пересланные сообщения
+• Текст
+• Фотографии
+• Файлы
+• Ссылки
+
+Или <code>/cancel</code> для отмены.""",
+        "help_text": """📖 <b>Справка</b>
+
+<b>Команды:</b>
+/start - Главное меню
+/analyze - Проверить сообщение
+/history - История проверок
+/stats - Статистика
+/logs - Логи бота
+/cancel - Отмена
+
+<b>Режимы анализа:</b>
+⚡ Быстрая проверка - мгновенно по правилам
+🧠 Глубокий AI анализ - детальная проверка текста и контекста
+
+<b>Что мы ищем:</b>
+• Предоплату и давление
+• Подозрительные ссылки и файлы
+• Манипуляции и срочность
+• Типичные паттерны мошенников
+
+Это инструмент помощи, окончательное решение остаётся за вами.""",
+        "about_text": """🛡️ <b>О проекте ScamGuard AI</b>
+
+ScamGuard AI помогает выявлять онлайн-мошенничество в сообщениях и объявлениях.
+
+<b>Что внутри:</b>
+• Rule Engine
+• AI анализ через Gemini
+• Анализ вложений и фото
+• История проверок и статистика
+
+<b>Цель:</b>
+Остановить мошенничество до того, как пользователь потеряет деньги или данные.""",
+        "loading_my_stats": "Загружаю вашу статистику...",
+        "loading_stats": "Загружаю статистику...",
+        "loading_logs": "Загружаю логи...",
+        "stats_empty": "📊 <b>Ваша статистика</b>\n\nУ вас пока нет проверок.\nНачните с кнопки проверки сообщения.",
+        "stats_error": "❌ Ошибка при получении статистики",
+        "generic_error": "❌ Произошла ошибка",
+        "cancelled": "❌ Операция отменена",
+        "history_empty": "📋 У вас пока нет истории проверок\n\nНачните с команды /analyze",
+        "history_title": "📋 <b>Ваша история проверок</b> (последние {count}):\n\n",
+        "history_error": "❌ Ошибка при получении истории",
+        "history_unknown": "неизвестный источник",
+        "my_stats_title": "📊 <b>Ваша статистика</b>",
+        "my_stats_total": "<b>Всего проверок:</b> {total}",
+        "my_stats_distribution": "<b>Распределение рисков:</b>",
+        "my_stats_high": "🔴 Высокий: {count} ({percent}%)",
+        "my_stats_medium": "🟡 Средний: {count} ({percent}%)",
+        "my_stats_low": "🟢 Низкий: {count} ({percent}%)",
+        "my_stats_avg": "<b>Средний риск:</b> {avg:.1f}/100",
+        "my_stats_recent": "<b>Последние проверки:</b>",
+        "my_stats_recent_item": "{idx}. {emoji} Риск {score}/100 ({date})",
+        "my_stats_saved": "✅ <b>Вы избежали {count} мошенничеств!</b>",
+        "global_stats_title": "📈 <b>Общая статистика ScamGuard AI</b>",
+        "global_stats_total": "<b>Всего проверок:</b> {total}",
+        "global_stats_avg": "<b>Средний риск:</b> {avg:.1f}/100",
+        "global_stats_distribution": "<b>Распределение:</b>",
+        "global_stats_low": "🟢 Низкий риск: {count}",
+        "global_stats_medium": "🟡 Средний риск: {count}",
+        "global_stats_high": "🔴 Высокий риск: {count}",
+        "global_stats_savings": "💰 <b>Предотвращено потерь:</b> ~${amount}",
+        "global_stats_flags": "<b>Топ красные флаги:</b>\n• Подозрительная цена\n• Требование предоплаты\n• Срочность и давление\n• Отсутствие контактов",
+        "global_stats_mission": "🎯 <b>Миссия:</b> Защитить людей от мошенников!",
+        "quick_status": "⚡ <b>Быстрая проверка...</b>\n▰▰▰▱▱▱▱▱▱▱ 30%\n⏳ Проверяю по 80+ правилам",
+        "quick_error": "❌ <b>Ошибка быстрой проверки:</b>\n{detail}",
+        "quick_timeout": "❌ <b>Быстрая проверка не удалась</b>\n\nПревышено время ожидания.\nПопробуйте позже.",
+        "analysis_error": "❌ <b>Произошла ошибка</b>\n\nДетали: <code>{detail}</code>",
+        "quick_result_header": "БЫСТРАЯ ПРОВЕРКА",
+        "risk_low": "НИЗКИЙ РИСК",
+        "risk_medium": "СРЕДНИЙ РИСК",
+        "risk_high": "ВЫСОКИЙ РИСК",
+        "status_label": "Статус: {level}",
+        "risk_score_label": "Оценка риска: {score}/100",
+        "problems_found": "Найдено проблем: {count}",
+        "detected_items": "Обнаружено:",
+        "recommendation_label": "Рекомендация:",
+        "quick_advice_high": "Подозрительное сообщение. Рекомендую провести глубокий AI анализ для точного вердикта.",
+        "quick_advice_medium": "Есть подозрительные признаки. Хотите глубокий анализ?",
+        "quick_advice_low": "Явных признаков мошенничества нет, но будьте бдительны.",
+        "deep_button": "Глубокий AI анализ",
+        "check_more_button": "Проверить ещё",
+        "home_button": "Главная",
+        "deep_offer": "Хотите узнать больше?\n\nЗапустите полный AI анализ с Gemini:\n- Глубокое понимание контекста\n- Определение тактик манипуляции\n- Анализ фото (если есть)\n- Точный вердикт за 10-15 секунд",
+    },
+    "en": {
+        "menu_analyze": "🔍 Check message",
+        "menu_my_stats": "📊 My stats",
+        "menu_global_stats": "📈 Global stats",
+        "menu_logs": "📋 Bot logs",
+        "menu_help": "❓ Help",
+        "menu_about": "ℹ️ About",
+        "main_menu_title": "🏠 <b>Main menu</b>\n\nChoose an action:",
+        "start_welcome": """🛡️ <b>Welcome to ScamGuard AI, {user_name}!</b>
+
+I help protect you from online scams. 🚨
+
+<b>🤖 What I can do:</b>
+• Analyze suspicious messages
+• Check attachments and files
+• Return a 0-100 risk score
+• Explain why a message looks dangerous
+
+<b>⚡ How it works:</b>
+1️⃣ You get a suspicious message or file
+2️⃣ Forward it to me
+3️⃣ I run a quick check
+4️⃣ If needed, I run a deeper AI analysis
+
+<b>Supported inputs:</b>
+• Forwarded messages
+• Plain text
+• Photos
+• Files
+• Listing URLs
+
+Just send a message or use the button below.""",
+        "analyze_prompt": """📨 <b>Forward a suspicious message</b>
+
+Supported:
+• Forwarded messages
+• Text
+• Photos
+• Files
+• Links
+
+Or use <code>/cancel</code> to stop.""",
+        "help_text": """📖 <b>Help</b>
+
+<b>Commands:</b>
+/start - Main menu
+/analyze - Check a message
+/history - Analysis history
+/stats - Statistics
+/logs - Bot logs
+/cancel - Cancel
+
+<b>Analysis modes:</b>
+⚡ Quick check - instant rule-based scan
+🧠 Deep AI analysis - more detailed text and context review
+
+<b>What we look for:</b>
+• Prepayment and pressure
+• Suspicious links and files
+• Manipulation and urgency
+• Common scam patterns
+
+This is an assistant tool. Final judgment is still yours.""",
+        "about_text": """🛡️ <b>About ScamGuard AI</b>
+
+ScamGuard AI helps detect online fraud in messages and listings.
+
+<b>What it uses:</b>
+• Rule Engine
+• Gemini AI analysis
+• Attachment and photo checks
+• Analysis history and statistics
+
+<b>Goal:</b>
+Stop scams before the user loses money or personal data.""",
+        "loading_my_stats": "Loading your stats...",
+        "loading_stats": "Loading statistics...",
+        "loading_logs": "Loading logs...",
+        "stats_empty": "📊 <b>Your stats</b>\n\nYou have no checks yet.\nStart with the message analysis button.",
+        "stats_error": "❌ Failed to load statistics",
+        "generic_error": "❌ An error occurred",
+        "cancelled": "❌ Operation cancelled",
+        "history_empty": "📋 You have no analysis history yet\n\nStart with /analyze",
+        "history_title": "📋 <b>Your analysis history</b> (latest {count}):\n\n",
+        "history_error": "❌ Failed to load history",
+        "history_unknown": "unknown source",
+        "my_stats_title": "📊 <b>Your stats</b>",
+        "my_stats_total": "<b>Total checks:</b> {total}",
+        "my_stats_distribution": "<b>Risk distribution:</b>",
+        "my_stats_high": "🔴 High: {count} ({percent}%)",
+        "my_stats_medium": "🟡 Medium: {count} ({percent}%)",
+        "my_stats_low": "🟢 Low: {count} ({percent}%)",
+        "my_stats_avg": "<b>Average risk:</b> {avg:.1f}/100",
+        "my_stats_recent": "<b>Recent checks:</b>",
+        "my_stats_recent_item": "{idx}. {emoji} Risk {score}/100 ({date})",
+        "my_stats_saved": "✅ <b>You may have avoided {count} scams!</b>",
+        "global_stats_title": "📈 <b>ScamGuard AI global stats</b>",
+        "global_stats_total": "<b>Total checks:</b> {total}",
+        "global_stats_avg": "<b>Average risk:</b> {avg:.1f}/100",
+        "global_stats_distribution": "<b>Distribution:</b>",
+        "global_stats_low": "🟢 Low risk: {count}",
+        "global_stats_medium": "🟡 Medium risk: {count}",
+        "global_stats_high": "🔴 High risk: {count}",
+        "global_stats_savings": "💰 <b>Estimated losses prevented:</b> ~${amount}",
+        "global_stats_flags": "<b>Top red flags:</b>\n• Suspicious price\n• Prepayment request\n• Urgency and pressure\n• Missing contact details",
+        "global_stats_mission": "🎯 <b>Mission:</b> Protect people from scammers!",
+        "quick_status": "⚡ <b>Quick check...</b>\n▰▰▰▱▱▱▱▱▱▱ 30%\n⏳ Checking against 80+ rules",
+        "quick_error": "❌ <b>Quick check failed:</b>\n{detail}",
+        "quick_timeout": "❌ <b>Quick check failed</b>\n\nThe request timed out.\nPlease try again later.",
+        "analysis_error": "❌ <b>An error occurred</b>\n\nDetails: <code>{detail}</code>",
+        "quick_result_header": "QUICK CHECK",
+        "risk_low": "LOW RISK",
+        "risk_medium": "MEDIUM RISK",
+        "risk_high": "HIGH RISK",
+        "status_label": "Status: {level}",
+        "risk_score_label": "Risk score: {score}/100",
+        "problems_found": "Problems found: {count}",
+        "detected_items": "Detected:",
+        "recommendation_label": "Recommendation:",
+        "quick_advice_high": "This looks suspicious. I recommend a deep AI analysis for a stronger verdict.",
+        "quick_advice_medium": "There are suspicious signs. Do you want a deeper analysis?",
+        "quick_advice_low": "No obvious scam indicators found, but stay careful.",
+        "deep_button": "Deep AI analysis",
+        "check_more_button": "Check another",
+        "home_button": "Home",
+        "deep_offer": "Want more detail?\n\nRun the full Gemini-powered AI analysis:\n- Better context understanding\n- Manipulation tactic detection\n- Photo analysis (if available)\n- More precise verdict in 10-15 seconds",
+    },
+}
+
+
+def get_user_language(obj) -> str:
+    """Bot replies in Russian for all users."""
+    return "ru"
+
+
+def t(lang: str, key: str, **kwargs) -> str:
+    """Translate a UI message with fallback to Russian."""
+    bucket = TRANSLATIONS.get(lang, TRANSLATIONS["ru"])
+    template = bucket.get(key) or TRANSLATIONS["ru"].get(key, key)
+    return template.format(**kwargs) if kwargs else template
+
+
+def compact_risk_bar(score: int) -> str:
+    """Return a short visual risk bar."""
+    filled = max(0, min(10, score // 10))
+    return "▰" * filled + "▱" * (10 - filled)
+
+
+def risk_badge(score: int, lang: str) -> str:
+    """Return localized risk badge."""
+    if score >= 60:
+        return f"🔴 {t(lang, 'risk_high')}"
+    if score >= 30:
+        return f"🟡 {t(lang, 'risk_medium')}"
+    return f"🟢 {t(lang, 'risk_low')}"
+
+
+def escape_html(text: str) -> str:
     """
-    Escape special Markdown characters in Telegram messages.
-    
-    Telegram Markdown special chars: * _ [ ] ( ) ~ ` > # + - = | { } . !
-    We need to escape them to prevent parse errors.
+    Escape HTML special characters for Telegram HTML parse mode.
+
+    Telegram HTML mode only needs escaping for: < > &
+    This keeps parentheses, dashes, underscores, etc. intact — much more readable.
     """
     if not text:
         return ""
-    
-    # Escape special Markdown characters
-    escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.','!']
-    escaped = text
-    for char in escape_chars:
-        escaped = escaped.replace(char, f"\\{char}")
-    
-    return escaped
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def safe_markdown_text(text: str) -> str:
     """
-    Safely escape text for Markdown parse mode.
+    Safely escape text for Telegram HTML parse mode.
     Use this for ANY dynamic content from user/AI.
     """
-    return escape_markdown(text)
+    return escape_html(text)
 
 
 class AnalysisStates(StatesGroup):
@@ -108,22 +390,22 @@ SUSPICIOUS_FILE_TYPES = {
 }
 
 
-def create_main_menu():
+def create_main_menu(lang: str = "ru"):
     """Create main menu keyboard"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔍 Проверить сообщение", callback_data="analyze")
+            InlineKeyboardButton(text=t(lang, "menu_analyze"), callback_data="analyze")
         ],
         [
-            InlineKeyboardButton(text="📊 Моя статистика", callback_data="my_stats"),
-            InlineKeyboardButton(text="📈 Общая статистика", callback_data="global_stats")
+            InlineKeyboardButton(text=t(lang, "menu_my_stats"), callback_data="my_stats"),
+            InlineKeyboardButton(text=t(lang, "menu_global_stats"), callback_data="global_stats")
         ],
         [
-            InlineKeyboardButton(text="📋 Логи бота", callback_data="bot_logs"),
-            InlineKeyboardButton(text="❓ Помощь", callback_data="help")
+            InlineKeyboardButton(text=t(lang, "menu_logs"), callback_data="bot_logs"),
+            InlineKeyboardButton(text=t(lang, "menu_help"), callback_data="help")
         ],
         [
-            InlineKeyboardButton(text="ℹ️ О проекте", callback_data="about")
+            InlineKeyboardButton(text=t(lang, "menu_about"), callback_data="about")
         ]
     ])
     return keyboard
@@ -134,33 +416,33 @@ async def cmd_start(message: Message):
     """Handle /start command"""
     user_name = message.from_user.first_name
     welcome_text = f"""
-🛡️ **Добро пожаловать в ScamGuard AI, {user_name}!**
+🛡️ <b>Добро пожаловать в ScamGuard AI, {user_name}!</b>
 
 Я защищаю вас от онлайн-мошенников! 🚨
 
-**🤖 Что я умею:**
+<b>🤖 Что я умею:</b>
 • Анализирую сообщения от мошенников
 • Detectирую 8 типов мошенничества
-• 📁 **ПРОВЕРЯЮ ФАЙЛЫ** (.apk, .exe, .pdf и др.)
+• 📁 <b>ПРОВЕРЯЮ ФАЙЛЫ</b> (.apk, .exe, .pdf и др.)
 • Сравниваю с базой паттернов мошенников
 • Даю персональные рекомендации
 
-**⚡ Как это работает:**
+<b>⚡ Как это работает:</b>
 1️⃣ Получили подозрительное сообщение/файл?
-2️⃣ **Перешлите его мне** (или скопируйте текст)
+2️⃣ <b>Перешлите его мне</b> (или скопируйте текст)
 3️⃣ Мгновенная проверка → оценка риска 0-100
 4️⃣ Узнайте правду и защитите свои деньги!
 
-**🎯 Поддерживается:**
+<b>🎯 Поддерживается:</b>
 • 📝 Пересланные сообщения из Telegram
 • 📋 Скопированный текст
-• 📁 **ФАЙЛЫ** (.apk, .exe, .pdf, .zip, .doc и др.)
+• 📁 <b>ФАЙЛЫ</b> (.apk, .exe, .pdf, .zip, .doc и др.)
 • 🖼 Фотографии с объявлений
 • 🔗 Ссылки на объявления
 
-**Просто перешлите мне сообщение или файл!** 👇
+<b>Просто перешлите мне сообщение или файл!</b> 👇
     """
-    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=create_main_menu())
+    await message.answer(welcome_text, parse_mode="HTML", reply_markup=create_main_menu())
 
 
 @dp.callback_query(F.data == "analyze")
@@ -169,15 +451,15 @@ async def callback_analyze(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(AnalysisStates.waiting_for_message)
     await callback.message.answer(
-        "📨 **Перешлите подозрительное сообщение**\n\n"
+        "📨 <b>Перешлите подозрительное сообщение</b>\n\n"
         "Поддерживаются:\n"
         "• 🔄 Пересланные сообщения из Telegram\n"
         "• 📝 Скопированный текст сообщения\n"
         "• 🖼 Фотографии (с объявления)\n"
         "• 🔗 Ссылки на объявления\n\n"
-        "💡 **Совет:** Просто перешлите сообщение от мошенника!\n\n"
+        "💡 <b>Совет:</b> Просто перешлите сообщение от мошенника!\n\n"
         "Или /cancel для отмены",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
@@ -186,17 +468,17 @@ async def callback_help(callback: types.CallbackQuery):
     """Handle help button"""
     await callback.answer()
     help_text = """
-📖 **Подробная справка**
+📖 <b>Подробная справка</b>
 
-**🎯 Основные команды:**
+<b>🎯 Основные команды:</b>
 /start - Главное меню
 /analyze - Проверить сообщение
 /history - История проверок
 /stats - Статистика
 
-**🔍 Что мы анализируем:**
+<b>🔍 Что мы анализируем:</b>
 
-1️⃣ **Типы мошенничества (8):**
+1️⃣ <b>Типы мошенничества (8):</b>
    • 🏠 Аренда/продажа (поддельные объявления)
    • 💰 Инвестиции (финансовые пирамиды)
    • ❤️ Романтика (фейковые отношения)
@@ -206,39 +488,39 @@ async def callback_help(callback: types.CallbackQuery):
    • 💳 Кража карт
    • 🆘 Tech support scams
 
-2️⃣ **📁 ПРОВЕРКА ФАЙЛОВ:**
+2️⃣ <b>📁 ПРОВЕРКА ФАЙЛОВ:</b>
    • 🔴 .exe, .msi, .bat, .cmd — ИСПОЛНЯЕМЫЕ (ВИРУСЫ!)
    • 🔴 .apk, .aab — Android приложения
    • 🟡 .docm, .xlsm — Документы с макросами
    • 🟡 .zip, .rar, .7z — Архивы
    • 🟢 .pdf — Документы (обычно безопасно)
 
-3️⃣ **Психологические манипуляции:**
+3️⃣ <b>Психологические манипуляции:</b>
    • Срочность и давление
    • Обещания лёгких денег
    • Эмоциональный шантаж
    • Фейковый авторитет
    • Секретность
 
-4️⃣ **Технический анализ:**
+4️⃣ <b>Технический анализ:</b>
    • Проверка фото (дубликаты, качество)
    • Сравнение с 25 паттернами
    • 80+ правил детектирования
    • AI анализ (87% точность)
 
-**⚡ Два режима проверки:**
-⚡ **Быстрая** — мгновенно, 80+ правил
-🧠 **Глубокая AI** — по кнопке, 10-15 сек
+<b>⚡ Два режима проверки:</b>
+⚡ <b>Быстрая</b> — мгновенно, 80+ правил
+🧠 <b>Глубокая AI</b> — по кнопке, 10-15 сек
 
-**⚠️ Уровни риска:**
+<b>⚠️ Уровни риска:</b>
 🟢 0-29: Низкий риск
 🟡 30-59: Средний риск
 🔴 60-100: Высокий риск (мошенник!)
 
-**💡 Помните:**
+<b>💡 Помните:</b>
 Это инструмент помощи, окончательное решение за вами!
     """
-    await callback.message.answer(help_text, parse_mode="Markdown", reply_markup=create_main_menu())
+    await callback.message.answer(help_text, parse_mode="HTML", reply_markup=create_main_menu())
 
 
 @dp.callback_query(F.data == "about")
@@ -246,12 +528,12 @@ async def callback_about(callback: types.CallbackQuery):
     """Handle about button"""
     await callback.answer()
     about_text = """
-🛡️ **О проекте ScamGuard AI**
+🛡️ <b>О проекте ScamGuard AI</b>
 
-**Миссия:**
+<b>Миссия:</b>
 Универсальная защита от ЛЮБЫХ онлайн-мошенников!
 
-**Возможности:**
+<b>Возможности:</b>
 🎯 8 типов мошенничества (аренда, инвестиции, романтика, фишинг, работа...)
 🧠 80+ правил детектирования
 📊 25 паттернов в базе мошенников
@@ -259,28 +541,28 @@ async def callback_about(callback: types.CallbackQuery):
 🔍 Проверка фото на дубликаты
 💡 Анализ психологических манипуляций
 
-**Pipeline анализа (4 модуля):**
+<b>Pipeline анализа (4 модуля):</b>
 • Rule Engine (80+ правил, instant)
 • Image Analysis (проверка фото)
 • Embedding Analysis (сравнение с базой)
 • AI Analysis (глубокий контекст)
 
-**Доказанная эффективность:**
+<b>Доказанная эффективность:</b>
 ✅ 87% Precision (точность)
 ✅ 93% Recall (полнота)
 ✅ 30 тестовых примеров
 ✅ $0 стоимость (бесплатный AI!)
 
-**Рынок:**
+<b>Рынок:</b>
 🌍 30M+ потенциальных пользователей
 💰 $500M ущерба ежегодно от мошенников
 
-**Команда:**
+<b>Команда:</b>
 Создано с ❤️ для защиты людей
 
-**Версия:** 0.4.0 (Universal Scam Detector)
+<b>Версия:</b> 0.4.0 (Universal Scam Detector)
     """
-    await callback.message.answer(about_text, parse_mode="Markdown", reply_markup=create_main_menu())
+    await callback.message.answer(about_text, parse_mode="HTML", reply_markup=create_main_menu())
 
 
 @dp.callback_query(F.data == "my_stats")
@@ -299,10 +581,10 @@ async def callback_my_stats(callback: types.CallbackQuery):
                 
                 if not history:
                     await callback.message.answer(
-                        "📊 **Ваша статистика**\n\n"
+                        "📊 <b>Ваша статистика</b>\n\n"
                         "У вас пока нет проверок.\n"
                         "Начните с кнопки '🔍 Проверить сообщение'!",
-                        parse_mode="Markdown",
+                        parse_mode="HTML",
                         reply_markup=create_main_menu()
                     )
                     return
@@ -315,18 +597,18 @@ async def callback_my_stats(callback: types.CallbackQuery):
                 avg_risk = sum(h['risk_score'] for h in history) / total
                 
                 stats_text = f"""
-📊 **Ваша статистика**
+📊 <b>Ваша статистика</b>
 
-**Всего проверок:** {total}
+<b>Всего проверок:</b> {total}
 
-**Распределение рисков:**
+<b>Распределение рисков:</b>
 🔴 Высокий: {high_risk} ({high_risk*100//total}%)
 🟡 Средний: {medium_risk} ({medium_risk*100//total}%)
 🟢 Низкий: {low_risk} ({low_risk*100//total}%)
 
-**Средний риск:** {avg_risk:.1f}/100
+<b>Средний риск:</b> {avg_risk:.1f}/100
 
-**Последние проверки:**
+<b>Последние проверки:</b>
 """
                 
                 for i, item in enumerate(history[:3], 1):
@@ -335,9 +617,9 @@ async def callback_my_stats(callback: types.CallbackQuery):
                     stats_text += f"\n{i}. {risk_emoji} Риск {item['risk_score']}/100 ({date})"
                 
                 if high_risk > 0:
-                    stats_text += f"\n\n✅ **Вы избежали {high_risk} мошенничеств!**"
+                    stats_text += f"\n\n✅ <b>Вы избежали {high_risk} мошенничеств!</b>"
                 
-                await callback.message.answer(stats_text, parse_mode="Markdown", reply_markup=create_main_menu())
+                await callback.message.answer(stats_text, parse_mode="HTML", reply_markup=create_main_menu())
             else:
                 await callback.message.answer("❌ Ошибка при получении статистики", reply_markup=create_main_menu())
                 
@@ -366,28 +648,28 @@ async def callback_global_stats(callback: types.CallbackQuery):
                 estimated_savings = high_risk * 300
 
                 stats_text = f"""
-📈 **Общая статистика ScamGuard AI**
+📈 <b>Общая статистика ScamGuard AI</b>
 
-**Всего проверок:** {total:,}
-**Средний риск:** {avg_risk:.1f}/100
+<b>Всего проверок:</b> {total:,}
+<b>Средний риск:</b> {avg_risk:.1f}/100
 
-**Распределение:**
+<b>Распределение:</b>
 🟢 Низкий риск: {dist.get('low', 0)}
 🟡 Средний риск: {dist.get('medium', 0)}
 🔴 Высокий риск: {dist.get('high', 0)}
 
-💰 **Предотвращено потерь:** ~${estimated_savings:,}
+💰 <b>Предотвращено потерь:</b> ~${estimated_savings:,}
 
-**Топ красные флаги:**
+<b>Топ красные флаги:</b>
 • Подозрительная цена
 • Требование предоплаты
 • Срочность и давление
 • Отсутствие контактов
 
-🎯 **Миссия:** Защитить людей от мошенников!
+🎯 <b>Миссия:</b> Защитить людей от мошенников!
                 """
 
-                await callback.message.answer(stats_text, parse_mode="Markdown", reply_markup=create_main_menu())
+                await callback.message.answer(stats_text, parse_mode="HTML", reply_markup=create_main_menu())
             else:
                 await callback.message.answer("❌ Ошибка при получении статистики", reply_markup=create_main_menu())
 
@@ -444,18 +726,18 @@ async def callback_bot_logs(callback: types.CallbackQuery):
             if len(parts) >= 3:
                 time_part = parts[0].strip()
                 msg_part = parts[-1].strip()[:70]
-                formatted_logs.append(f"{emoji} `{time_part}` {msg_part}")
+                formatted_logs.append(f"{emoji} <code>{time_part}</code> {msg_part}")
         
         # Build report
         report = f"""
-📋 **ЛОГИ БОТА**
+📋 <b>ЛОГИ БОТА</b>
 
-📊 **Сводка:**
+📊 <b>Сводка:</b>
 ℹ️ Информации: {info}
 ⚠️ Предупреждений: {warnings}
 ❌ Ошибок: {errors}
 
-**Последние события:**
+<b>Последние события:</b>
 {'─' * 32}
 """
         
@@ -478,17 +760,17 @@ async def callback_bot_logs(callback: types.CallbackQuery):
         
         report += f"""
 {'─' * 32}
-{health_emoji} **Здоровье: {health_text} ({health}/100)**
+{health_emoji} <b>Здоровье: {health_text} ({health}/100)</b>
 
-💡 **Команды:**
-• `/logs` — показать логи в боте
-• `/stats` — общая статистика
+💡 <b>Команды:</b>
+• <code>/logs</code> — показать логи в боте
+• <code>/stats</code> — общая статистика
 """
         
         if len(report) > 4000:
             report = report[:3900] + "\n..."
         
-        await callback.message.answer(report, parse_mode="Markdown", reply_markup=create_main_menu())
+        await callback.message.answer(report, parse_mode="HTML", reply_markup=create_main_menu())
         
     except Exception as e:
         logger.error(f"Error reading logs: {e}")
@@ -526,18 +808,19 @@ async def cmd_history(message: Message):
                     )
                     return
                 
-                text = f"📋 **Ваша история проверок** (последние {len(history)}):\n\n"
+                text = f"📋 <b>Ваша история проверок</b> (последние {len(history)}):\n\n"
                 
                 for i, item in enumerate(history, 1):
                     risk_emoji = "🟢" if item['risk_level'] == 'low' else "🟡" if item['risk_level'] == 'medium' else "🔴"
-                    url_short = item['url'][:40] + "..." if len(item['url']) > 40 else item['url']
+                    source_text = item.get('summary') or item.get('url') or "unknown"
+                    url_short = source_text[:40] + "..." if len(source_text) > 40 else source_text
                     date = item['created_at'][:16].replace('T', ' ')
                     
-                    text += f"{i}. {risk_emoji} **{item['risk_score']}/100**\n"
-                    text += f"   `{url_short}`\n"
+                    text += f"{i}. {risk_emoji} <b>{item['risk_score']}/100</b>\n"
+                    text += f"   <code>{url_short}</code>\n"
                     text += f"   📅 {date}\n\n"
                 
-                await message.answer(text, parse_mode="Markdown", reply_markup=create_main_menu())
+                await message.answer(text, parse_mode="HTML", reply_markup=create_main_menu())
             else:
                 await message.answer("❌ Ошибка при получении истории", reply_markup=create_main_menu())
                 
@@ -548,7 +831,7 @@ async def cmd_history(message: Message):
 
 @dp.message(AnalysisStates.waiting_for_message)
 async def process_message(message: Message, state: FSMContext):
-    """Process message: quick check first, then offer deep analysis"""
+    """Process message with immediate deep AI analysis."""
     await state.clear()
 
     # Extract text and photos from the message
@@ -571,13 +854,12 @@ async def process_message(message: Message, state: FSMContext):
             "• Переслать текстовое сообщение\n"
             "• Отправить фото с объявления\n"
             "• Скопировать текст сообщения",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=create_main_menu()
         )
         return
 
-    # NEW FLOW: Quick check first
-    await process_message_quick_then_offer_deep(
+    await process_message_deep_analysis(
         message, message_text, photos, is_forwarded
     )
 
@@ -597,8 +879,7 @@ async def handle_forwarded_message(message: Message, state: FSMContext):
         return
 
     await state.clear()
-    # NEW FLOW: Quick check first
-    await process_message_quick_then_offer_deep(
+    await process_message_deep_analysis(
         message, message_text, photos, is_forwarded=True
     )
 
@@ -619,8 +900,7 @@ async def handle_photo_message(message: Message, state: FSMContext):
             await analyze_url(message, url_match.group())
             return
 
-    # NEW FLOW: Quick check first
-    await process_message_quick_then_offer_deep(
+    await process_message_deep_analysis(
         message, caption, photos, is_forwarded=False
     )
 
@@ -637,8 +917,7 @@ async def handle_text_message(message: Message, state: FSMContext):
         await analyze_url(message, text)
         return
 
-    # NEW FLOW: Quick check first
-    await process_message_quick_then_offer_deep(
+    await process_message_deep_analysis(
         message, text, [], is_forwarded=False
     )
 
@@ -688,6 +967,7 @@ async def analyze_file_with_warning(
     risk_score = 0
     red_flags = []
     recommendations = []
+    lang = get_user_language(message)
 
     # Check 1: File type risk
     if file_type in CRITICAL_FILE_TYPES:
@@ -820,45 +1100,49 @@ async def analyze_file_with_warning(
         emoji = '🟢'
         level_text = 'НИЗКИЙ РИСК'
 
-    # Build result message
-    risk_bars = '▰' * (risk_score // 10) + '▱' * (10 - risk_score // 10)
+    size_label = f"{file_size // 1024 if file_size > 1024 else file_size} {'MB' if file_size > 1024*1024 else 'KB' if file_size > 1024 else 'B'}"
+    file_type_label = file_ext.upper() if file_ext else ("Unknown" if lang == "en" else "Неизвестно")
+    result_text = (
+        f"📁 <b>{'File check' if lang == 'en' else 'Проверка файла'}</b>\n\n"
+        f"{emoji} <b>{level_text}</b>\n"
+        f"<code>{compact_risk_bar(risk_score)}</code> {risk_score}/100\n\n"
+        f"<b>{'File' if lang == 'en' else 'Файл'}:</b> <code>{file_name}</code>\n"
+        f"<b>{'Type' if lang == 'en' else 'Тип'}:</b> {file_type_label}\n"
+        f"<b>{'Size' if lang == 'en' else 'Размер'}:</b> {size_label}\n"
+        f"<b>{'Findings' if lang == 'en' else 'Найдено'}:</b> {len(red_flags)}"
+    )
 
-    result_text = f"""
-{emoji}═══════════════════════════{emoji}
-       📁 **АНАЛИЗ ФАЙЛА**
-{emoji}═══════════════════════════{emoji}
-
-📄 **Файл:** `{file_name}`
-📏 **Размер:** {file_size // 1024 if file_size > 1024 else file_size} {'MB' if file_size > 1024*1024 else 'KB' if file_size > 1024 else 'B'}
-📦 **Тип:** {file_ext.upper() if file_ext else 'Неизвестно'}
-
-{emoji} **Статус:** {level_text}
-📊 **Оценка риска:** {risk_score}/100
-
-{risk_bars}
-
-🔍 **Обнаружено проблем:** {len(red_flags)}
-"""
-
-    # Show red flags
     if red_flags:
-        result_text += "\n⚠️ **Предупреждения:**\n"
-        for flag in red_flags[:6]:
-            result_text += f"{flag['description']}\n"
+        title = "⚠️ <b>Top risks:</b>" if lang == "en" else "⚠️ <b>Главные риски:</b>"
+        result_text += f"\n\n{title}\n"
+        for flag in red_flags[:4]:
+            result_text += f"• {flag['description']}\n"
 
-    # Add recommendations
     if recommendations:
-        result_text += "\n💡 **Рекомендации:**\n"
-        for i, rec in enumerate(recommendations[:5], 1):
-            result_text += f"{i}. {rec}\n"
+        title = "💡 <b>What to do:</b>" if lang == "en" else "💡 <b>Что делать:</b>"
+        result_text += f"\n{title}\n"
+        for rec in recommendations[:3]:
+            result_text += f"• {rec}\n"
 
-    # Always add general file safety advice
-    result_text += "\n🔒 **Правила безопасности:**\n"
-    result_text += "• Не устанавливайте файлы от неизвестных\n"
-    result_text += "• Проверяйте антивирусом перед открытием\n"
-    result_text += "• Не включайте макросы в документах\n"
+    safety_title = "🔒 <b>Basic safety:</b>" if lang == "en" else "🔒 <b>Базовая безопасность:</b>"
+    safety_lines = (
+        [
+            "Do not install files from unknown senders",
+            "Scan files before opening them",
+            "Do not enable macros in documents",
+        ]
+        if lang == "en"
+        else [
+            "Не устанавливайте файлы от неизвестных отправителей",
+            "Проверяйте файлы перед открытием",
+            "Не включайте макросы в документах",
+        ]
+    )
+    result_text += f"\n{safety_title}\n"
+    for line in safety_lines:
+        result_text += f"• {line}\n"
 
-    await message.answer(result_text, parse_mode="Markdown")
+    await message.answer(result_text, parse_mode="HTML")
 
     # Offer deep analysis for context
     if caption and risk_score < 70:
@@ -866,19 +1150,20 @@ async def analyze_file_with_warning(
         deep_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🧠 Анализ текста сообщения",
+                    text="🧠 Text analysis" if lang == "en" else "🧠 Анализ текста сообщения",
                     callback_data="analyze"
                 )
             ],
             [
-                InlineKeyboardButton(text="🏠 Главная", callback_data="main_menu")
+                InlineKeyboardButton(text="🏠 Home" if lang == "en" else "🏠 Главная", callback_data="main_menu")
             ]
         ])
 
         await message.answer(
-            "📝 Хотите проанализировать **текст сообщения**?\n\n"
-            "Бот проверит текст на признаки мошенничества.",
-            parse_mode="Markdown",
+            "📝 Want me to analyze the <b>message text</b> too?\n\nI can scan the text for scam signals."
+            if lang == "en" else
+            "📝 Хотите проанализировать <b>текст сообщения</b>?\n\nБот проверит текст на признаки мошенничества.",
+            parse_mode="HTML",
             reply_markup=deep_keyboard
         )
 
@@ -888,20 +1173,20 @@ async def analyze_url(message: Message, url: str):
     user_id = message.from_user.id
 
     # Send animated "analyzing" messages
-    status_msg = await message.answer("🔍 **Начинаю анализ...**", parse_mode="Markdown")
+    status_msg = await message.answer("🔍 <b>Начинаю анализ...</b>", parse_mode="HTML")
 
     await asyncio.sleep(1)
-    await status_msg.edit_text("🔍 **Парсинг данных...**\n⏳ Загружаю информацию", parse_mode="Markdown")
+    await status_msg.edit_text("🔍 <b>Парсинг данных...</b>\n⏳ Загружаю информацию", parse_mode="HTML")
 
     try:
         async with httpx.AsyncClient() as client:
             # Show progress
             await asyncio.sleep(1.5)
             await status_msg.edit_text(
-                "🔍 **Анализирую данные...**\n"
+                "🔍 <b>Анализирую данные...</b>\n"
                 "▰▰▰▱▱▱▱▱▱▱ 30%\n"
                 "⏳ Проверяю текст и фото",
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
 
             response = await client.post(
@@ -911,10 +1196,10 @@ async def analyze_url(message: Message, url: str):
             )
 
             await status_msg.edit_text(
-                "🔍 **Финализирую результаты...**\n"
+                "🔍 <b>Финализирую результаты...</b>\n"
                 "▰▰▰▰▰▰▰▰▰▱ 90%\n"
                 "⏳ Генерирую рекомендации",
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
 
             if response.status_code == 200:
@@ -922,25 +1207,274 @@ async def analyze_url(message: Message, url: str):
                 await send_detailed_result(message, result, url, status_msg)
             else:
                 error_detail = response.json().get('detail', 'Unknown error')
-                await status_msg.edit_text(f"❌ **Ошибка анализа:**\n{error_detail}", parse_mode="Markdown")
+                await status_msg.edit_text(f"❌ <b>Ошибка анализа:</b>\n{error_detail}", parse_mode="HTML")
 
     except httpx.TimeoutException:
         await status_msg.edit_text(
-            "❌ **Превышено время ожидания**\n\n"
+            "❌ <b>Превышено время ожидания</b>\n\n"
             "Возможные причины:\n"
             "• Сообщение слишком большое\n"
             "• Проблемы с сетью\n\n"
             "Попробуйте позже или другую ссылку",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except Exception as e:
         logger.error(f"Error analyzing URL: {e}")
         await status_msg.edit_text(
-            "❌ **Произошла ошибка**\n\n"
-            f"Детали: `{str(e)[:100]}`\n\n"
+            "❌ <b>Произошла ошибка</b>\n\n"
+            f"Детали: <code>{str(e)[:100]}</code>\n\n"
             "Попробуйте другую ссылку или обратитесь в поддержку",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
+
+
+async def prepare_photo_payload(photos: list) -> list[dict]:
+    """Download up to 3 Telegram photos and encode them for deep analysis."""
+    if not photos:
+        return []
+
+    encoded_photos = []
+    for index, photo in enumerate(photos[-3:]):
+        try:
+            telegram_file = await bot.get_file(photo.file_id)
+            buffer = io.BytesIO()
+            await bot.download_file(telegram_file.file_path, destination=buffer)
+            encoded_photos.append(
+                {
+                    "index": index,
+                    "data": base64.b64encode(buffer.getvalue()).decode("utf-8"),
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to download photo {index} for deep analysis: {e}")
+
+    return encoded_photos
+
+
+async def process_message_deep_analysis(
+    message: Message,
+    text: str,
+    photos: list,
+    is_forwarded: bool = False
+):
+    """Primary bot flow: run the full deep AI analysis immediately."""
+    user_id = message.from_user.id
+    message_text = (text or "").strip()
+
+    status_msg = await message.answer(
+        "🧠 <b>Запускаю глубокий AI анализ...</b>\n"
+        "<code>▰▰▰▱▱▱▱▱▱▱</code>\n"
+        "Готовлю текст и вложения",
+        parse_mode="HTML"
+    )
+
+    try:
+        encoded_photos = await prepare_photo_payload(photos)
+
+        await status_msg.edit_text(
+            "🧠 <b>Глубокий AI анализ...</b>\n"
+            "<code>▰▰▰▰▰▰▱▱▱▱</code>\n"
+            "Анализирую контекст, манипуляции и риск-сигналы",
+            parse_mode="HTML"
+        )
+
+        payload = {
+            "text": message_text,
+            "user_id": user_id,
+            "is_forwarded": is_forwarded,
+            "photos": encoded_photos,
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{API_URL}/analyze-message-deep",
+                json=payload,
+                timeout=150.0
+            )
+
+        if response.status_code == 200:
+            result = response.json()
+            message_id = result.get("details", {}).get("message_id")
+            await send_summary_result(message, result, status_msg, message_id)
+            return
+
+        error_detail = response.json().get("detail", "Unknown error")
+        await status_msg.edit_text(
+            f"❌ <b>Ошибка AI анализа:</b>\n{safe_markdown_text(str(error_detail)[:300])}",
+            parse_mode="HTML"
+        )
+    except httpx.TimeoutException:
+        await status_msg.edit_text(
+            "❌ <b>AI анализ занял слишком много времени</b>\n\n"
+            "Попробуйте ещё раз через минуту.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Error in deep analysis: {e}")
+        await status_msg.edit_text(
+            "❌ <b>Произошла ошибка при AI анализе</b>\n\n"
+            f"Детали: <code>{str(e)[:120]}</code>",
+            parse_mode="HTML"
+        )
+
+
+def get_risk_verdict_text(risk_level: str) -> str:
+    """Return a short Russian verdict for the current risk level."""
+    if risk_level == "low":
+        return "Похоже относительно безопасно"
+    if risk_level == "medium":
+        return "Нужна осторожность"
+    return "Высокая вероятность мошенничества"
+
+
+async def send_summary_result(
+    message: Message,
+    result: dict,
+    status_msg: Message,
+    message_id: int | None
+):
+    """Send a simple, user-friendly summary — no technical jargon."""
+    risk_score = result["risk_score"]
+    risk_level = result["risk_level"]
+    red_flags = result.get("red_flags", [])
+    recommendations = result.get("recommendations", [])
+    details = result.get("details", {})
+
+    try:
+        await status_msg.delete()
+    except Exception as e:
+        logger.debug(f"Could not delete status message (already deleted?): {e}")
+
+    # Simple verdict based on risk level
+    if risk_level == "high":
+        verdict_emoji = "🔴"
+        verdict_title = "⚠️ ВЫСОКИЙ РИСК"
+        verdict_text = "Это похоже на мошенничество. Будьте очень осторожны!"
+    elif risk_level == "medium":
+        verdict_emoji = "🟡"
+        verdict_title = "СРЕДНИЙ РИСК"
+        verdict_text = "Есть подозрительные моменты. Проявите осторожность."
+    else:
+        verdict_emoji = "🟢"
+        verdict_title = "НИЗКИЙ РИСК"
+        verdict_text = "Явных признаков обмана нет, но будьте внимательны."
+
+    # Build simple summary
+    summary_text = f"{verdict_emoji} <b>{verdict_title}</b>\n\n"
+    summary_text += f"<b>Оценка:</b> {risk_score}/100\n"
+    summary_text += f"<b>Вывод:</b> {verdict_text}"
+
+    # Top 2 red flags (translated to simple language)
+    if red_flags:
+        summary_text += "\n\n<b>Что насторожило:</b>\n"
+        for flag in red_flags[:2]:
+            desc = flag['description']
+            # Remove technical prefixes like "🚨", "⚠️", etc.
+            desc = desc.lstrip('🚨⚠️❌🔴🟡⚪ ').strip()
+            summary_text += f"• {safe_markdown_text(desc)}\n"
+
+    # Top 1-2 recommendations
+    if recommendations:
+        summary_text += "\n<b>Совет:</b>\n"
+        for rec in recommendations[:2]:
+            summary_text += f"• {safe_markdown_text(rec)}\n"
+
+    # Action buttons
+    keyboard_rows = []
+    if message_id:
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text="📋 Полный отчёт",
+                    callback_data=f"details_message:{message_id}"
+                )
+            ]
+        )
+    keyboard_rows.append(
+        [
+            InlineKeyboardButton(text="🔍 Проверить ещё", callback_data="analyze"),
+            InlineKeyboardButton(text="🏠 Главная", callback_data="main_menu")
+        ]
+    )
+
+    await message.answer(
+        summary_text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    )
+
+
+async def send_message_detailed_report(message: Message, report: dict):
+    """Send the full saved report — simplified for regular users."""
+    risk_score = report["risk_score"]
+    risk_level = report["risk_level"]
+    red_flags = report.get("red_flags", [])
+    recommendations = report.get("recommendations", [])
+    details = report.get("details", {}) or {}
+
+    nlp_details = details.get("nlp_llm", {})
+    explanation = nlp_details.get("explanation") or details.get("explanation") or "Подробное объяснение не сохранено."
+    scam_type = nlp_details.get("scam_type") or details.get("scam_type") or "не определён"
+    manipulation_tactics = nlp_details.get("manipulation_tactics") or details.get("manipulation_tactics") or []
+    message_text = (report.get("message_text") or "").strip()
+
+    # Simple verdict
+    if risk_level == "high":
+        verdict_emoji = "🔴"
+        verdict_title = "ВЫСОКИЙ РИСК МОШЕННИЧЕСТВА"
+    elif risk_level == "medium":
+        verdict_emoji = "🟡"
+        verdict_title = "СРЕДНИЙ РИСК"
+    else:
+        verdict_emoji = "🟢"
+        verdict_title = "НИЗКИЙ РИСК"
+
+    detail_text = f"{verdict_emoji} <b>{verdict_title}</b>\n\n"
+    detail_text += f"<b>Оценка риска:</b> {risk_score}/100\n\n"
+
+    # Full explanation from AI
+    detail_text += f"<b>📝 Объяснение:</b>\n{safe_markdown_text(explanation[:500])}\n\n"
+
+    # Scam type
+    detail_text += f"<b>Тип схемы:</b> {safe_markdown_text(str(scam_type))}\n"
+
+    # Manipulation tactics (simplified)
+    if manipulation_tactics and manipulation_tactics != "не определён":
+        detail_text += "\n<b>Методы давления:</b>\n"
+        if isinstance(manipulation_tactics, list):
+            for tactic in manipulation_tactics[:3]:
+                detail_text += f"• {safe_markdown_text(str(tactic))}\n"
+        else:
+            detail_text += f"• {safe_markdown_text(str(manipulation_tactics))}\n"
+
+    # All red flags
+    if red_flags:
+        detail_text += f"\n<b>Найдено подозрительного: {len(red_flags)}</b>\n\n"
+        for index, flag in enumerate(red_flags[:8], 1):
+            desc = flag['description'].lstrip('🚨⚠️❌🔴🟡⚪ ').strip()
+            severity_icon = "🔴" if flag['severity'] >= 7 else "🟡" if flag['severity'] >= 5 else "⚪"
+            detail_text += f"{index}. {severity_icon} {safe_markdown_text(desc)}\n"
+
+    # Recommendations
+    if recommendations:
+        detail_text += f"\n<b>Что делать:</b>\n"
+        for index, rec in enumerate(recommendations[:5], 1):
+            detail_text += f"{index}. {safe_markdown_text(rec)}\n"
+
+    # Message snippet (only if not too long)
+    if message_text and len(message_text) > 50:
+        snippet = message_text[:400]
+        detail_text += f"\n<b>Проверенное сообщение:</b>\n_{safe_markdown_text(snippet)}_"
+
+    # Limit message length
+    if len(detail_text) > 4000:
+        detail_text = detail_text[:3900] + "\n\n_... отчёт сокращён ..._"
+
+    await message.answer(
+        detail_text,
+        parse_mode="HTML",
+        reply_markup=create_main_menu()
+    )
 
 
 async def process_message_quick_then_offer_deep(
@@ -960,6 +1494,7 @@ async def process_message_quick_then_offer_deep(
     """
     user_id = message.from_user.id
     has_photos = len(photos) > 0
+    lang = get_user_language(message)
 
     # Check for file attachments (from message.document)
     has_file = False
@@ -969,10 +1504,10 @@ async def process_message_quick_then_offer_deep(
 
     # Step 1: Quick check (instant)
     status_msg = await message.answer(
-        "⚡ **Быстрая проверка...**\n"
-        "▰▰▰▱▱▱▱▱▱▱ 30%\n"
-        "⏳ Проверяю по 80+ правилам",
-        parse_mode="Markdown"
+        "⚡ <b>Quick check...</b>\n<code>▰▰▰▱▱▱▱▱▱▱</code>\nChecking 80+ rules"
+        if lang == "en" else
+        "⚡ <b>Быстрая проверка...</b>\n<code>▰▰▰▱▱▱▱▱▱▱</code>\nПроверяю по 80+ правилам",
+        parse_mode="HTML"
     )
 
     try:
@@ -1004,23 +1539,27 @@ async def process_message_quick_then_offer_deep(
             else:
                 error_detail = response.json().get('detail', 'Unknown error')
                 await status_msg.edit_text(
-                    f"❌ **Ошибка быстрой проверки:**\n{error_detail}",
-                    parse_mode="Markdown"
+                    f"❌ <b>Quick check failed:</b>\n{error_detail}"
+                    if lang == "en" else
+                    f"❌ <b>Ошибка быстрой проверки:</b>\n{error_detail}",
+                    parse_mode="HTML"
                 )
 
     except httpx.TimeoutException:
         await status_msg.edit_text(
-            "❌ **Быстрая проверка не удалась**\n\n"
-            "Превышено время ожидания.\n"
-            "Попробуйте позже.",
-            parse_mode="Markdown"
+            "❌ <b>Quick check timed out</b>\n\nPlease try again later."
+            if lang == "en" else
+            "❌ <b>Быстрая проверка не удалась</b>\n\nПревышено время ожидания.\nПопробуйте позже.",
+            parse_mode="HTML"
         )
     except Exception as e:
         logger.error(f"Error in quick check: {e}")
         await status_msg.edit_text(
-            "❌ **Произошла ошибка**\n\n"
-            f"Детали: `{str(e)[:100]}`",
-            parse_mode="Markdown"
+            f"❌ <b>An error occurred</b>\n\nDetails: <code>{str(e)[:100]}</code>"
+            if lang == "en" else
+            "❌ <b>Произошла ошибка</b>\n\n"
+            f"Детали: <code>{str(e)[:100]}</code>",
+            parse_mode="HTML"
         )
 
 
@@ -1031,84 +1570,58 @@ async def send_quick_result(
     status_msg: Message,
     message_id: int
 ):
-    """Show quick check results with button for deep analysis"""
+    """Show quick check results — simplified for regular users."""
     risk_score = result['risk_score']
     risk_level = result['risk_level']
     red_flags = result.get('red_flags', [])
+    lang = get_user_language(message)
 
     # Delete status message
     await status_msg.delete()
 
-    # Determine status label based on risk level
-    if risk_level == 'low':
-        level_text = "НИЗКИЙ РИСК"
-        status_label = "[OK]"
-    elif risk_level == 'medium':
-        level_text = "СРЕДНИЙ РИСК"
-        status_label = "[!]"
+    # Simple verdict
+    if risk_level == "high":
+        verdict_emoji = "🔴"
+        verdict_title = "ВЫСОКИЙ РИСК"
+        verdict_text = "Это выглядит подозрительно. Рекомендую глубокий анализ."
+    elif risk_level == "medium":
+        verdict_emoji = "🟡"
+        verdict_title = "СРЕДНИЙ РИСК"
+        verdict_text = "Есть подозрительные моменты. Хотите глубокий анализ?"
     else:
-        level_text = "ВЫСОКИЙ РИСК"
-        status_label = "[!!!]"
+        verdict_emoji = "🟢"
+        verdict_title = "НИЗКИЙ РИСК"
+        verdict_text = "Явных признаков обмана нет, но будьте внимательны."
 
-    # Create visual risk bar
-    risk_bars = "X" * (risk_score // 10) + "." * (10 - risk_score // 10)
+    result_text = f"{verdict_emoji} <b>{verdict_title}</b>\n\n"
+    result_text += f"<b>Оценка:</b> {risk_score}/100\n"
+    result_text += f"<b>Вывод:</b> {verdict_text}"
 
-    # Build quick result message
-    result_text = f"""
-{'=' * 35}
-      БЫСТРАЯ ПРОВЕРКА
-{'=' * 35}
-
-{status_label} Статус: {level_text}
-Оценка риска: {risk_score}/100
-
-[{risk_bars}]
-
-Найдено проблем: {len(red_flags)}
-"""
-
-    # Show top flags (ESCAPE Markdown special chars!)
     if red_flags:
-        result_text += "\nОбнаружено:\n"
-        for i, flag in enumerate(red_flags[:5], 1):
-            severity_label = "[!!]" if flag['severity'] >= 7 else "[!]" if flag['severity'] >= 5 else "[-]"
-            # Escape description text to prevent Markdown parse errors
-            safe_desc = safe_markdown_text(flag['description'])
-            result_text += f"  {i}. {severity_label} {safe_desc}\n"
+        result_text += f"\n\n<b>Нашлось подозрительного: {len(red_flags)}</b>\n"
+        for i, flag in enumerate(red_flags[:3], 1):
+            safe_desc = safe_markdown_text(flag['description'].lstrip('🚨⚠️❌🔴🟡⚪ ').strip())
+            result_text += f"{i}. {safe_desc}\n"
 
-    # Add consultation-style advice
-    result_text += f"\nРекомендация: "
-    if risk_score >= 60:
-        result_text += "Подозрительное сообщение. Рекомендую провести глубокий AI анализ для точного вердикта."
-    elif risk_score >= 30:
-        result_text += "Есть подозрительные признаки. Хотите глубокий анализ?"
-    else:
-        result_text += "Явных признаков мошенничества нет, но будьте бдительны."
-
-    # Send as plain text (no parse_mode to avoid errors)
-    await message.answer(result_text)
+    await message.answer(result_text, parse_mode="HTML")
 
     # Button for deep analysis
     deep_keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(
-                text="Глубокий AI анализ",
+                text="🧠 Глубокий AI анализ",
                 callback_data=f"deep_analysis:{message_id}"
             )
         ],
         [
-            InlineKeyboardButton(text="Проверить ещё", callback_data="analyze"),
-            InlineKeyboardButton(text="Главная", callback_data="main_menu")
+            InlineKeyboardButton(text="🔍 Проверить ещё", callback_data="analyze"),
+            InlineKeyboardButton(text="🏠 Главная", callback_data="main_menu")
         ]
     ])
 
     await message.answer(
-        "Хотите узнать больше?\n\n"
-        "Запустите полный AI анализ с Gemini:\n"
-        "- Глубокое понимание контекста\n"
-        "- Определение тактик манипуляции\n"
-        "- Анализ фото (если есть)\n"
-        "- Точный вердикт за 10-15 секунд",
+        "💡 Хотите узнать больше?\n\n"
+        "Запустите полный AI анализ — он проверит текст, контекст и фото (если есть).",
         reply_markup=deep_keyboard
     )
 
@@ -1172,10 +1685,10 @@ async def run_deep_analysis_for_message(
     try:
         # Send progress messages
         progress_msg = await callback.message.answer(
-            "**Запускаю глубокий AI анализ...**\n"
+            "<b>Запускаю глубокий AI анализ...</b>\n"
             "XXX....... 30%\n"
             "Анализирую контекст сообщения",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
         async with httpx.AsyncClient() as client:
@@ -1201,39 +1714,40 @@ async def run_deep_analysis_for_message(
 
             # For now, show a message that we need the text again
             await progress_msg.edit_text(
-                "**Требуется сообщение**\n\n"
+                "<b>Требуется сообщение</b>\n\n"
                 "Пожалуйста, перешлите сообщение ещё раз,\n"
                 "и сразу запустится полный AI анализ.\n\n"
                 "Или используйте команду /analyze",
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=create_main_menu()
             )
 
     except Exception as e:
         logger.error(f"Error in deep analysis: {e}")
         await callback.message.answer(
-            "**Ошибка глубокого анализа**\n\n"
+            "<b>Ошибка глубокого анализа</b>\n\n"
             "Попробуйте позже или обратитесь в поддержку",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
 
 async def analyze_message(message: Message, text: str, photos: list, is_forwarded: bool = False):
     """
     LEGACY FUNCTION - kept for compatibility
-    Use process_message_quick_then_offer_deep instead
+    Use process_message_deep_analysis instead
     """
     logger.warning("Using legacy analyze_message function")
-    await process_message_quick_then_offer_deep(message, text, photos, is_forwarded)
+    await process_message_deep_analysis(message, text, photos, is_forwarded)
 
 
 async def send_detailed_result(message: Message, result: dict, url: str, status_msg: Message):
-    """Format and send detailed analysis result"""
+    """Format and send detailed analysis result — simplified for regular users."""
     risk_score = result['risk_score']
     risk_level = result['risk_level']
     red_flags = result.get('red_flags', [])
     recommendations = result.get('recommendations', [])
     details = result.get('details', {})
+    lang = get_user_language(message)
 
     # Delete status message (safely - ignore if already deleted)
     try:
@@ -1241,125 +1755,135 @@ async def send_detailed_result(message: Message, result: dict, url: str, status_
     except Exception as e:
         logger.debug(f"Could not delete status message (already deleted?): {e}")
 
-    # Determine status label based on risk level
-    if risk_level == 'low':
-        level_text = "НИЗКИЙ РИСК"
-        level_desc = "Относительно безопасно"
-        status_label = "[OK]"
+    # Simple verdict
+    if risk_level == 'high':
+        verdict_emoji = "🔴"
+        verdict_title = "ВЫСОКИЙ РИСК"
+        verdict_text = "Это похоже на мошенничество!"
     elif risk_level == 'medium':
-        level_text = "СРЕДНИЙ РИСК"
-        level_desc = "Будьте осторожны"
-        status_label = "[!]"
+        verdict_emoji = "🟡"
+        verdict_title = "СРЕДНИЙ РИСК"
+        verdict_text = "Есть подозрительные моменты."
     else:
-        level_text = "ВЫСОКИЙ РИСК"
-        level_desc = "Вероятно мошенничество"
-        status_label = "[!!!]"
+        verdict_emoji = "🟢"
+        verdict_title = "НИЗКИЙ РИСК"
+        verdict_text = "Явных признаков обмана нет."
 
-    # Create visual risk bar
-    risk_bars = "X" * (risk_score // 10) + "." * (10 - risk_score // 10)
+    result_text = (
+        f"{verdict_emoji} <b>{verdict_title}</b>\n\n"
+        f"<b>Оценка:</b> {risk_score}/100\n"
+        f"<b>Вывод:</b> {verdict_text}"
+    )
 
-    # Build main result message
-    result_text = f"""
-{'=' * 39}
-        РЕЗУЛЬТАТ АНАЛИЗА
-{'=' * 39}
+    # Skip component scores — regular users don't need them
 
-{status_label} Статус: {level_text}
-Оценка риска: {risk_score}/100
+    await message.answer(result_text, parse_mode="HTML")
 
-[{risk_bars}]
-
-Вердикт: {level_desc}
-"""
-
-    # Add component scores if available
-    component_scores = details.get('component_scores', {})
-    if component_scores:
-        result_text += "\nДетали анализа:\n"
-        result_text += f"  - Правила: {component_scores.get('rule_engine', 0)}/100\n"
-        if 'nlp_llm' in component_scores:
-            result_text += f"  - AI: {component_scores.get('nlp_llm', 0)}/100\n"
-        if 'embedding' in component_scores:
-            result_text += f"  - Паттерны: {component_scores.get('embedding', 0)}/100\n"
-
-    await message.answer(result_text)
-
-    # Send red flags if any (ESCAPE Markdown!)
     if red_flags:
-        flags_text = "ОБНАРУЖЕННЫЕ ПРОБЛЕМЫ:\n\n"
-
-        # Group by severity
+        flags_text = "⚠️ <b>Что насторожило:</b>\n\n"
+        # Group by severity but show simply
         critical = [f for f in red_flags if f['severity'] >= 8]
         high = [f for f in red_flags if 5 <= f['severity'] < 8]
         medium = [f for f in red_flags if f['severity'] < 5]
 
         if critical:
-            flags_text += "[!!!] Критические:\n"
+            flags_text += "<b>Критично:</b>\n"
             for i, flag in enumerate(critical[:3], 1):
-                safe_desc = safe_markdown_text(flag['description'])
-                flags_text += f"  {i}. {safe_desc}\n"
+                safe_desc = safe_markdown_text(flag['description'].lstrip('🚨⚠️❌🔴🟡⚪ ').strip())
+                flags_text += f"{i}. 🔴 {safe_desc}\n"
             flags_text += "\n"
 
         if high:
-            flags_text += "[!!] Серьезные:\n"
+            flags_text += "<b>Серьёзно:</b>\n"
             for i, flag in enumerate(high[:3], 1):
-                safe_desc = safe_markdown_text(flag['description'])
-                flags_text += f"  {i}. {safe_desc}\n"
+                safe_desc = safe_markdown_text(flag['description'].lstrip('🚨⚠️❌🔴🟡⚪ ').strip())
+                flags_text += f"{i}. 🟡 {safe_desc}\n"
             flags_text += "\n"
 
-        if medium:
-            flags_text += "[-] Предупреждения:\n"
+        if medium and not critical and not high:
+            flags_text += "<b>Другое:</b>\n"
             for i, flag in enumerate(medium[:2], 1):
-                safe_desc = safe_markdown_text(flag['description'])
-                flags_text += f"  {i}. {safe_desc}\n"
+                safe_desc = safe_markdown_text(flag['description'].lstrip('🚨⚠️❌🔴🟡⚪ ').strip())
+                flags_text += f"{i}. ⚪ {safe_desc}\n"
 
-        await message.answer(flags_text)
+        await message.answer(flags_text, parse_mode="HTML")
 
-    # Send recommendations (ESCAPE Markdown!)
     if recommendations:
-        rec_text = "РЕКОМЕНДАЦИИ:\n\n"
-        for i, rec in enumerate(recommendations[:6], 1):
+        rec_text = "💡 <b>Что делать:</b>\n\n"
+        for i, rec in enumerate(recommendations[:3], 1):
             safe_rec = safe_markdown_text(rec)
-            rec_text += f"  {i}. {safe_rec}\n\n"
+            rec_text += f"{i}. {safe_rec}\n"
 
-        await message.answer(rec_text)
-    
+        await message.answer(rec_text, parse_mode="HTML")
+
     # Add action buttons
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Детальный отчет", callback_data=f"details_{url}"),
-        ],
-        [
-            InlineKeyboardButton(text="Проверить еще", callback_data="analyze"),
-            InlineKeyboardButton(text="Главная", callback_data="main_menu")
+            InlineKeyboardButton(text="🔍 Проверить ещё", callback_data="analyze"),
+            InlineKeyboardButton(text="🏠 Главная", callback_data="main_menu")
         ]
     ])
 
-    # Final message with link
-    final_text = f"[Открыть ссылку]({url})\n\n"
+    final_text = f"🔗 <a href='{url}'>Открыть источник</a>\n\n"
 
     if risk_score >= 70:
-        final_text += "[!!!] Настоятельно рекомендуем избегать контакта с этим источником!"
+        final_text += "🔴 Не связывайтесь с этим источником!"
     elif risk_score >= 50:
-        final_text += "[!] Проявите особую осторожность при взаимодействии"
+        final_text += "🟡 Проявите особую осторожность."
     else:
-        final_text += "[OK] Но всегда соблюдайте общие меры безопасности"
-    
-    await message.answer(final_text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=keyboard)
-    
+        final_text += "🟢 Явных сигналов нет, но будьте внимательны."
+
+    await message.answer(final_text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=keyboard)
+
     # Ask for feedback if high risk
     if risk_score > 40:
         feedback_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="Точный анализ", callback_data=f"feedback_good"),
-                InlineKeyboardButton(text="Неточно", callback_data=f"feedback_bad")
+                InlineKeyboardButton(text="✅ Точно", callback_data=f"feedback_good"),
+                InlineKeyboardButton(text="❌ Неточно", callback_data=f"feedback_bad")
             ]
         ])
         await message.answer(
-            "**Помогите улучшить систему**\n"
-            "Наш анализ был точным?",
-            parse_mode="Markdown",
+            "📊 <b>Помогите стать лучше</b>\nНаш анализ был точным?",
+            parse_mode="HTML",
             reply_markup=feedback_keyboard
+        )
+
+
+@dp.callback_query(F.data.startswith("details_message:"))
+async def callback_details_message(callback: types.CallbackQuery):
+    """Show the saved detailed report for a message analysis."""
+    await callback.answer()
+
+    try:
+        message_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Неверный идентификатор отчёта", show_alert=True)
+        return
+
+    loading_msg = await callback.message.answer(
+        "📄 <b>Открываю детальный отчёт...</b>",
+        parse_mode="HTML"
+    )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{API_URL}/message/{message_id}", timeout=15.0)
+
+        if response.status_code != 200:
+            await loading_msg.edit_text(
+                "❌ <b>Не удалось получить детальный отчёт</b>",
+                parse_mode="HTML"
+            )
+            return
+
+        await loading_msg.delete()
+        await send_message_detailed_report(callback.message, response.json())
+    except Exception as e:
+        logger.error(f"Error loading detailed report: {e}")
+        await loading_msg.edit_text(
+            "❌ <b>Ошибка при загрузке детального отчёта</b>",
+            parse_mode="HTML"
         )
 
 
@@ -1368,8 +1892,8 @@ async def callback_main_menu(callback: types.CallbackQuery):
     """Return to main menu"""
     await callback.answer()
     await callback.message.answer(
-        "🏠 **Главное меню**\n\nВыберите действие:",
-        parse_mode="Markdown",
+        "🏠 <b>Главное меню</b>\n\nВыберите действие:",
+        parse_mode="HTML",
         reply_markup=create_main_menu()
     )
 
@@ -1382,14 +1906,14 @@ async def process_feedback(callback: types.CallbackQuery):
     if feedback == 'good':
         await callback.answer("Спасибо за отзыв! 🙏", show_alert=True)
         await callback.message.edit_text(
-            callback.message.text + "\n\n✅ **Спасибо за отзыв!** Вы помогаете нам стать лучше 💙",
-            parse_mode="Markdown"
+            callback.message.text + "\n\n✅ <b>Спасибо за отзыв!</b> Вы помогаете нам стать лучше 💙",
+            parse_mode="HTML"
         )
     else:
         await callback.answer("Мы учтем ваш отзыв для улучшения!", show_alert=True)
         await callback.message.edit_text(
-            callback.message.text + "\n\n📝 **Отзыв принят!** Мы постоянно улучшаем алгоритм",
-            parse_mode="Markdown"
+            callback.message.text + "\n\n📝 <b>Отзыв принят!</b> Мы постоянно улучшаем алгоритм",
+            parse_mode="HTML"
         )
 
 
@@ -1410,22 +1934,22 @@ async def cmd_stats(message: Message):
                 estimated_savings = high_risk * 300
 
                 stats_text = f"""
-📈 **Статистика ScamGuard AI**
+📈 <b>Статистика ScamGuard AI</b>
 
-**Всего проверок:** {total:,}
-**Средний риск:** {avg_risk:.1f}/100
+<b>Всего проверок:</b> {total:,}
+<b>Средний риск:</b> {avg_risk:.1f}/100
 
-**Распределение рисков:**
+<b>Распределение рисков:</b>
 🔴 Высокий: {dist.get('high', 0)}
 🟡 Средний: {dist.get('medium', 0)}
 🟢 Низкий: {dist.get('low', 0)}
 
-💰 **Предотвращено потерь:** ~${estimated_savings:,}
+💰 <b>Предотвращено потерь:</b> ~${estimated_savings:,}
 
 Вместе мы боремся с мошенниками! 💪
                 """
 
-                await message.answer(stats_text, parse_mode="Markdown", reply_markup=create_main_menu())
+                await message.answer(stats_text, parse_mode="HTML", reply_markup=create_main_menu())
             else:
                 await message.answer("❌ Ошибка при получении статистики", reply_markup=create_main_menu())
 
@@ -1482,18 +2006,18 @@ async def cmd_logs(message: Message):
             if len(parts) >= 3:
                 time_part = parts[0].strip()
                 msg_part = parts[-1].strip()[:80]
-                formatted_logs.append(f"{emoji} `{time_part}` {msg_part}")
+                formatted_logs.append(f"{emoji} <code>{time_part}</code> {msg_part}")
         
         # Build report
         report = f"""
-📋 **ПОСЛЕДНИЕ СОБЫТИЯ БОТА**
+📋 <b>ПОСЛЕДНИЕ СОБЫТИЯ БОТА</b>
 
-📊 **Сводка:**
+📊 <b>Сводка:</b>
 ℹ️ Информации: {info}
 ⚠️ Предупреждений: {warnings}
 ❌ Ошибок: {errors}
 
-**Последние 15 событий:**
+<b>Последние 15 событий:</b>
 {'─' * 35}
 """
         
@@ -1516,14 +2040,14 @@ async def cmd_logs(message: Message):
         
         report += f"""
 {'─' * 35}
-{health_emoji} **Здоровье: {health_text} ({health}/100)**
+{health_emoji} <b>Здоровье: {health_text} ({health}/100)</b>
 """
         
         # Split message if too long (Telegram limit ~4096 chars)
         if len(report) > 4000:
             report = report[:3900] + "\n\n... (продолжение в файле)"
         
-        await message.answer(report, parse_mode="Markdown", reply_markup=create_main_menu())
+        await message.answer(report, parse_mode="HTML", reply_markup=create_main_menu())
         
     except Exception as e:
         logger.error(f"Error reading logs: {e}")
@@ -1543,14 +2067,12 @@ async def handle_any_message(message: Message):
             reply_markup=create_main_menu()
         )
     elif message.text:
-        # If it's just text, use quick check
-        await process_message_quick_then_offer_deep(
+        await process_message_deep_analysis(
             message, message.text.strip(), [], is_forwarded=False
         )
     elif message.photo:
-        # If it's a photo, use quick check
         caption = message.caption or ""
-        await process_message_quick_then_offer_deep(
+        await process_message_deep_analysis(
             message, caption, message.photo, is_forwarded=False
         )
     elif message.document:
@@ -1590,10 +2112,10 @@ async def callback_deep_analysis(callback: types.CallbackQuery):
     
     # Send progress message
     progress_msg = await callback.message.answer(
-        "🧠 **Запускаю глубокий AI анализ...**\n"
+        "🧠 <b>Запускаю глубокий AI анализ...</b>\n"
         "▰▰▰▱▱▱▱▱▱▱ 30%\n"
         "⏳ Загружаю сообщение",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     
     try:
@@ -1606,9 +2128,9 @@ async def callback_deep_analysis(callback: types.CallbackQuery):
             
             if response.status_code != 200:
                 await progress_msg.edit_text(
-                    "❌ **Сообщение не найдено**\n\n"
+                    "❌ <b>Сообщение не найдено</b>\n\n"
                     "Перешлите сообщение ещё раз для анализа.",
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                     reply_markup=create_main_menu()
                 )
                 return
@@ -1621,19 +2143,19 @@ async def callback_deep_analysis(callback: types.CallbackQuery):
             
             if not message_text:
                 await progress_msg.edit_text(
-                    "**Текст сообщения пустой**\n\n"
+                    "<b>Текст сообщения пустой</b>\n\n"
                     "Перешлите сообщение ещё раз.",
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                     reply_markup=create_main_menu()
                 )
                 return
 
             # Update progress
             await progress_msg.edit_text(
-                "**Глубокий AI анализ...**\n"
+                "<b>Глубокий AI анализ...</b>\n"
                 "XXXXXX.... 60%\n"
                 "Запускаю Gemini NLP",
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
             
             # Prepare deep analysis request
@@ -1738,10 +2260,12 @@ async def main():
 if __name__ == "__main__":
     import os, atexit
 
-    PID_FILE = "/tmp/scamguard_bot.pid"
+    project_root = Path(__file__).resolve().parents[2]
+    pid_file_env = os.environ.get("SCAMGUARD_BOT_PID_FILE")
+    PID_FILE = Path(pid_file_env) if pid_file_env else project_root / ".bot.pid"
 
     # Check if another instance is already running
-    if os.path.exists(PID_FILE):
+    if PID_FILE.exists():
         with open(PID_FILE) as f:
             existing_pid = f.read().strip()
         try:
@@ -1757,7 +2281,11 @@ if __name__ == "__main__":
 
     def cleanup_pid():
         try:
-            os.remove(PID_FILE)
+            if PID_FILE.exists():
+                with open(PID_FILE) as f:
+                    current_pid = f.read().strip()
+                if current_pid == str(os.getpid()):
+                    PID_FILE.unlink()
         except FileNotFoundError:
             pass
 

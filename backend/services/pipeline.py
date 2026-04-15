@@ -51,6 +51,10 @@ class FraudDetectionPipeline:
             'image_analysis': 0.20  # Photo authenticity
         }
 
+    async def analyze(self, listing: ListingData) -> AnalysisResult:
+        """Compatibility wrapper for URL/listing analysis."""
+        return await self.analyze_listing(listing)
+
     async def analyze_listing(self, listing: ListingData) -> AnalysisResult:
         """
         Legacy method - analyze from parsed URL/listing
