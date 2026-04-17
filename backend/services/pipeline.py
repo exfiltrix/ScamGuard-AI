@@ -1,31 +1,36 @@
 """
-Unified fraud detection pipeline v2.0
-4 specialized AI modules: NLP/LLM, Rule Engine, Embedding, Image Analysis
+Unified fraud detection pipeline v2.1
+5 specialized AI modules: NLP/LLM, Rule Engine, Embedding, Image Analysis, Context/Grounding
 """
+import asyncio as _asyncio
 from typing import Dict, List, Optional
 from backend.models.schemas import ListingData, AnalysisResult, RedFlag, RiskLevel
 from backend.services.rule_engine import RuleEngine
 from backend.services.gemini_analyzer import GeminiAnalyzer
 from backend.services.image_analyzer import ImageAnalyzer
 from backend.services.embedding_analyzer import EmbeddingAnalyzer
+from backend.services.url_analyzer import URLAnalyzer
+from backend.services.context_analyzer import ContextAnalyzer
 from loguru import logger
 from collections import defaultdict
 
 
 class FraudDetectionPipeline:
     """
-    Unified pipeline for fraud detection with 4 specialized modules
-    
+    Unified pipeline for fraud detection with 5 specialized modules
+
     Architecture:
     1. NLP/LLM Analysis (Gemini) - Context understanding, manipulation detection
     2. Rule Engine - Deterministic checks (price, prepayment, urgency)
     3. Embedding Analysis - Similarity with known scam patterns
     4. Image Analysis (Gemini Vision) - Stock photos, duplicates, quality
+    5. Context/Grounding (Gemini + Google Search) - URL legitimacy, real-world verification
     """
 
     def __init__(self):
         from backend.config import get_settings
         settings = get_settings()
+        keys = settings.get_google_api_keys()
 
         # Module 1: NLP/LLM Analysis (Gemini)
         self.nlp_analyzer = GeminiAnalyzer()
@@ -43,12 +48,22 @@ class FraudDetectionPipeline:
         self.image_analyzer = ImageAnalyzer()
         logger.info("✅ Image Module: initialized")
 
+        # Module 5: URL Analysis (offline heuristics)
+        self.url_analyzer = URLAnalyzer()
+        logger.info("✅ URL Module: initialized")
+
+        # Module 6: Context/Grounding (Gemini + Google Search)
+        self.context_analyzer = ContextAnalyzer(keys)
+        logger.info("✅ Context/Grounding Module: initialized")
+
         # Weights for scoring (sum = 1.0)
         self.weights = {
-            'nlp_llm': 0.35,        # AI understands context & manipulation
-            'rule_engine': 0.25,    # Deterministic checks
-            'embedding': 0.20,      # Known scam similarity
-            'image_analysis': 0.20  # Photo authenticity
+            'nlp_llm': 0.25,
+            'rule_engine': 0.20,
+            'embedding': 0.10,
+            'image_analysis': 0.10,
+            'url_analysis': 0.15,
+            'context': 0.20,
         }
 
     async def analyze(self, listing: ListingData) -> AnalysisResult:
@@ -219,8 +234,39 @@ class FraudDetectionPipeline:
             else:
                 component_scores['embedding'] = 0
 
-            # Calculate final score (only rules + embeddings, no AI)
-            # Adjust weights for quick check
+            # Module 3: URL Analysis (fast, offline) + Context HTTP fallback (parallel)
+            try:
+                url_result, ctx_result = await _asyncio.gather(
+                    self.url_analyzer.analyze_urls(text),
+                    self.context_analyzer.analyze(text),
+                    return_exceptions=True,
+                )
+
+                if not isinstance(url_result, Exception):
+                    url_score, url_flags, url_details = url_result
+                    if url_score > 0:
+                        component_scores['url_analysis'] = url_score
+                        all_red_flags.extend([
+                            RedFlag(severity=f['severity'], category=f['category'], description=f['description'])
+                            for f in url_flags
+                        ])
+                        analysis_details['url_analysis'] = url_details
+                        logger.debug(f"🔗 URL analysis: score={url_score}, flags={len(url_flags)}")
+
+                if not isinstance(ctx_result, Exception) and ctx_result:
+                    ctx_score, ctx_flags, ctx_details = ctx_result
+                    if ctx_score > 0:
+                        component_scores['context'] = ctx_score
+                    all_red_flags.extend([
+                        RedFlag(severity=f['severity'], category=f['category'], description=f['description'])
+                        for f in ctx_flags
+                    ])
+                    analysis_details['context'] = ctx_details
+
+            except Exception as e:
+                logger.error(f"URL/Context analysis failed: {e}")
+
+            # Calculate final score (rules + embeddings + URL + context)
             final_score = self._calculate_weighted_score_quick(component_scores)
 
             # Deduplicate and sort flags
@@ -308,9 +354,64 @@ class FraudDetectionPipeline:
                 component_scores['embedding'] = qc_scores.get('embedding', 0)
                 all_red_flags.extend(quick_result.red_flags)
                 analysis_details['reused_from_quick'] = True
+
+                # Run NLP, Image, URL in parallel (rules already done)
+                async def run_image():
+                    if photos:
+                        return await self.image_analyzer.analyze_photos(photos[:3])
+                    return 0, [], {}
+
+                nlp_result, image_result, url_result, ctx_result = await _asyncio.gather(
+                    self.nlp_analyzer.analyze(pseudo_listing),
+                    run_image(),
+                    self.url_analyzer.analyze_urls(text),
+                    self.context_analyzer.analyze(text),
+                    return_exceptions=True
+                )
+
+                if isinstance(nlp_result, Exception):
+                    logger.error(f"NLP failed: {nlp_result}")
+                    nlp_result = await self.nlp_analyzer._fallback_analysis(pseudo_listing)
+
+                component_scores['nlp_llm'] = nlp_result.risk_score
+                all_red_flags.extend(nlp_result.red_flags)
+                analysis_details['nlp_llm'] = nlp_result.details
+
+                if isinstance(image_result, Exception):
+                    logger.error(f"Image analysis failed: {image_result}")
+                    component_scores['image_analysis'] = 0
+                else:
+                    image_score, image_flags, image_details = image_result
+                    component_scores['image_analysis'] = image_score
+                    all_red_flags.extend(image_flags)
+                    if image_details:
+                        analysis_details['image_analysis'] = image_details
+
+                if not isinstance(url_result, Exception):
+                    url_score, url_flags, url_details = url_result
+                    if url_score > 0:
+                        component_scores['url_analysis'] = url_score
+                        all_red_flags.extend([
+                            RedFlag(severity=f['severity'], category=f['category'], description=f['description'])
+                            for f in url_flags
+                        ])
+                        analysis_details['url_analysis'] = url_details
+
+                if not isinstance(ctx_result, Exception) and ctx_result:
+                    ctx_score, ctx_flags, ctx_details = ctx_result
+                    if ctx_score > 0:
+                        component_scores['context'] = ctx_score
+                    all_red_flags.extend([
+                        RedFlag(severity=f['severity'], category=f['category'], description=f['description'])
+                        for f in ctx_flags
+                    ])
+                    analysis_details['context'] = ctx_details
+                elif isinstance(ctx_result, Exception):
+                    logger.warning(f"Context analysis failed: {ctx_result}")
+
             else:
-                # Run Rule Engine
-                logger.debug("📐 Module 2: Rule Engine...")
+                # Run all modules: Rule Engine is sync+fast, others run in parallel
+                logger.debug("📐 Rule Engine (sync)...")
                 rule_score, rule_flags = self.rule_engine.analyze(pseudo_listing)
                 component_scores['rule_engine'] = rule_score
                 all_red_flags.extend(rule_flags)
@@ -319,43 +420,74 @@ class FraudDetectionPipeline:
                     'flags_count': len(rule_flags)
                 }
 
-                # Run Embedding Analysis
-                if text and len(text) > 20:
-                    try:
-                        emb_score, emb_flags, emb_details = await self.embedding_analyzer.analyze(text)
-                        component_scores['embedding'] = emb_score
-                        all_red_flags.extend(emb_flags)
-                        analysis_details['embedding'] = emb_details
-                    except Exception as e:
-                        logger.error(f"Embedding analysis failed: {e}")
-                        component_scores['embedding'] = 0
-                else:
+                # NLP, Embedding, Image, URL — run in parallel
+                async def run_embedding():
+                    if text and len(text) > 20:
+                        return await self.embedding_analyzer.analyze(text)
+                    return 0, [], {}
+
+                async def run_image():
+                    if photos:
+                        return await self.image_analyzer.analyze_photos(photos[:3])
+                    return 0, [], {}
+
+                nlp_result, emb_result, image_result, url_result, ctx_result = await _asyncio.gather(
+                    self.nlp_analyzer.analyze(pseudo_listing),
+                    run_embedding(),
+                    run_image(),
+                    self.url_analyzer.analyze_urls(text),
+                    self.context_analyzer.analyze(text),
+                    return_exceptions=True
+                )
+
+                if isinstance(nlp_result, Exception):
+                    logger.error(f"NLP failed: {nlp_result}")
+                    nlp_result = await self.nlp_analyzer._fallback_analysis(pseudo_listing)
+                component_scores['nlp_llm'] = nlp_result.risk_score
+                all_red_flags.extend(nlp_result.red_flags)
+                analysis_details['nlp_llm'] = nlp_result.details
+
+                if isinstance(emb_result, Exception):
+                    logger.error(f"Embedding failed: {emb_result}")
                     component_scores['embedding'] = 0
+                else:
+                    emb_score, emb_flags, emb_details = emb_result
+                    component_scores['embedding'] = emb_score
+                    all_red_flags.extend(emb_flags)
+                    if emb_details:
+                        analysis_details['embedding'] = emb_details
 
-            # Module 1: NLP/LLM Analysis (Gemini) - PRIMARY
-            logger.debug("🧠 Module 1: Gemini NLP Analysis...")
-            nlp_result = await self.nlp_analyzer.analyze(pseudo_listing)
-            component_scores['nlp_llm'] = nlp_result.risk_score
-            all_red_flags.extend(nlp_result.red_flags)
-            analysis_details['nlp_llm'] = nlp_result.details
+                if not isinstance(url_result, Exception):
+                    url_score, url_flags, url_details = url_result
+                    if url_score > 0:
+                        component_scores['url_analysis'] = url_score
+                        all_red_flags.extend([
+                            RedFlag(severity=f['severity'], category=f['category'], description=f['description'])
+                            for f in url_flags
+                        ])
+                        analysis_details['url_analysis'] = url_details
 
-            # Module 4: Image Analysis (if photos exist, max 3)
-            if photos and len(photos) > 0:
-                logger.debug(f"🖼 Module 4: Image Analysis ({len(photos)} photos)...")
-                try:
-                    # Limit to 3 photos for speed
-                    photos_limited = photos[:3]
-                    image_score, image_flags, image_details = await self.image_analyzer.analyze_photos(
-                        photos_limited
-                    )
+                if isinstance(image_result, Exception):
+                    logger.error(f"Image analysis failed: {image_result}")
+                    component_scores['image_analysis'] = 0
+                else:
+                    image_score, image_flags, image_details = image_result
                     component_scores['image_analysis'] = image_score
                     all_red_flags.extend(image_flags)
-                    analysis_details['image_analysis'] = image_details
-                except Exception as e:
-                    logger.error(f"Image analysis failed: {e}")
-                    component_scores['image_analysis'] = 0
-            else:
-                component_scores['image_analysis'] = 0
+                    if image_details:
+                        analysis_details['image_analysis'] = image_details
+
+                if not isinstance(ctx_result, Exception) and ctx_result:
+                    ctx_score, ctx_flags, ctx_details = ctx_result
+                    if ctx_score > 0:
+                        component_scores['context'] = ctx_score
+                    all_red_flags.extend([
+                        RedFlag(severity=f['severity'], category=f['category'], description=f['description'])
+                        for f in ctx_flags
+                    ])
+                    analysis_details['context'] = ctx_details
+                elif isinstance(ctx_result, Exception):
+                    logger.warning(f"Context analysis failed: {ctx_result}")
 
             # Calculate final score
             final_score = self._calculate_weighted_score(component_scores)
@@ -397,11 +529,12 @@ class FraudDetectionPipeline:
                 return self._emergency_fallback()
 
     def _calculate_weighted_score_quick(self, component_scores: Dict[str, int]) -> int:
-        """Calculate weighted score for quick check (rules + embeddings only)"""
-        # Adjusted weights for quick check (no AI)
+        """Calculate weighted score for quick check (rules + embeddings + URL + context)."""
         quick_weights = {
-            'rule_engine': 0.60,
-            'embedding': 0.40,
+            'rule_engine': 0.40,
+            'embedding': 0.15,
+            'url_analysis': 0.25,
+            'context': 0.20,
         }
 
         total_score = 0
@@ -414,9 +547,29 @@ class FraudDetectionPipeline:
                 total_weight += weight
 
         if total_weight == 0:
-            return 50  # Default medium risk
+            return 50
 
         final_score = int(total_score / total_weight)
+
+        rule_score = component_scores.get('rule_engine', 0)
+        url_score  = component_scores.get('url_analysis', 0)
+        ctx_score  = component_scores.get('context', 0)
+        max_any    = max(component_scores.values()) if component_scores else 0
+
+        if rule_score == 100:
+            final_score = max(final_score, 85)
+        elif rule_score >= 80:
+            final_score = max(final_score, 75)
+
+        if url_score >= 60:
+            final_score = max(final_score, 70)
+
+        if ctx_score >= 70:
+            final_score = max(final_score, 75)
+
+        if max_any >= 90:
+            final_score = max(final_score, 80)
+
         return min(max(final_score, 0), 100)
 
     async def analyze_message(
@@ -495,21 +648,55 @@ class FraudDetectionPipeline:
                 component_scores['embedding'] = 0
                 logger.debug("Embedding skipped (text too short)")
 
-            # Module 4: Image Analysis (if photos exist)
-            logger.debug("🖼 Module 4: Image Analysis (Gemini Vision)...")
-            if photos:
-                try:
-                    image_score, image_flags, image_details = await self.image_analyzer.analyze_photos(
-                        photos
-                    )
-                    component_scores['image_analysis'] = image_score
-                    all_red_flags.extend(image_flags)
-                    analysis_details['image_analysis'] = image_details
-                except Exception as e:
-                    logger.error(f"Image analysis failed: {e}")
-                    component_scores['image_analysis'] = 20
+            # Module 4: Image Analysis + Context/Grounding (parallel)
+            logger.debug("🖼 Module 4: Image + Context analysis...")
+
+            async def run_image_msg():
+                if photos:
+                    return await self.image_analyzer.analyze_photos(photos)
+                return 0, [], {}
+
+            async def run_url_msg():
+                return await self.url_analyzer.analyze_urls(text)
+
+            image_result, url_result, ctx_result = await _asyncio.gather(
+                run_image_msg(),
+                run_url_msg(),
+                self.context_analyzer.analyze(text),
+                return_exceptions=True,
+            )
+
+            if isinstance(image_result, Exception):
+                logger.error(f"Image analysis failed: {image_result}")
+                component_scores['image_analysis'] = 0
             else:
-                component_scores['image_analysis'] = 0  # No penalty for text-only messages
+                image_score, image_flags, image_details = image_result
+                component_scores['image_analysis'] = image_score
+                all_red_flags.extend(image_flags)
+                if image_details:
+                    analysis_details['image_analysis'] = image_details
+
+            if not isinstance(url_result, Exception):
+                url_score, url_flags, url_details = url_result
+                if url_score > 0:
+                    component_scores['url_analysis'] = url_score
+                    all_red_flags.extend([
+                        RedFlag(severity=f['severity'], category=f['category'], description=f['description'])
+                        for f in url_flags
+                    ])
+                    analysis_details['url_analysis'] = url_details
+
+            if not isinstance(ctx_result, Exception) and ctx_result:
+                ctx_score, ctx_flags, ctx_details = ctx_result
+                if ctx_score > 0:
+                    component_scores['context'] = ctx_score
+                all_red_flags.extend([
+                    RedFlag(severity=f['severity'], category=f['category'], description=f['description'])
+                    for f in ctx_flags
+                ])
+                analysis_details['context'] = ctx_details
+            elif isinstance(ctx_result, Exception):
+                logger.warning(f"Context analysis failed: {ctx_result}")
 
             # Calculate final score
             final_score = self._calculate_weighted_score(component_scores)
@@ -543,14 +730,24 @@ class FraudDetectionPipeline:
 
         except Exception as e:
             logger.error(f"❌ Message pipeline error: {e}")
-            # Fallback to simple NLP analysis
             try:
                 return await self.nlp_analyzer.analyze(pseudo_listing)
             except:
                 return self._emergency_fallback()
 
     def _calculate_weighted_score(self, component_scores: Dict[str, int]) -> int:
-        """Calculate weighted average score from components"""
+        """
+        Weighted average score with floor protection.
+
+        If any single module already signals HIGH/CRITICAL risk, the weighted
+        average cannot artificially drag the score into MEDIUM territory.
+
+        Floor rules:
+          - rule_engine >= 80  → floor = 75
+          - rule_engine == 100 → floor = 85
+          - url_analysis >= 60 → floor = max(current, 70)
+          - any module >= 90   → floor = max(current, 80)
+        """
         total_score = 0
         total_weight = 0
 
@@ -561,9 +758,30 @@ class FraudDetectionPipeline:
                 total_weight += weight
 
         if total_weight == 0:
-            return 50  # Default medium risk
+            return 50
 
         final_score = int(total_score / total_weight)
+
+        # Apply floor protection
+        rule_score = component_scores.get('rule_engine', 0)
+        url_score  = component_scores.get('url_analysis', 0)
+        ctx_score  = component_scores.get('context', 0)
+        max_any    = max(component_scores.values()) if component_scores else 0
+
+        if rule_score == 100:
+            final_score = max(final_score, 85)
+        elif rule_score >= 80:
+            final_score = max(final_score, 75)
+
+        if url_score >= 60:
+            final_score = max(final_score, 70)
+
+        if ctx_score >= 70:
+            final_score = max(final_score, 75)
+
+        if max_any >= 90:
+            final_score = max(final_score, 80)
+
         return min(max(final_score, 0), 100)
 
     def _deduplicate_flags(self, flags: List[RedFlag]) -> List[RedFlag]:
@@ -633,6 +851,17 @@ class FraudDetectionPipeline:
 
         if 'manipulation' in flag_categories:
             recommendations.append("🧠 Обнаружены психологические манипуляции — будьте начеку")
+
+        if 'url_context' in flag_categories or 'context' in flag_categories:
+            recommendations.append("🔍 Ссылки в сообщении не прошли проверку — сайт не существует или является мошенническим")
+
+        if 'loan_scam' in flag_categories:
+            recommendations.append("💸 Схема 'займи денег': мошенники взламывают аккаунты друзей и рассылают такие просьбы")
+            recommendations.append("📞 Позвоните другу напрямую и убедитесь, что именно он писал — не отвечайте в этом же чате")
+
+        if 'investment_scam' in flag_categories:
+            recommendations.append("🤖 'Зарабатывай через мой бот' — это пирамида: деньги первых участников платят последним, большинство теряет всё")
+            recommendations.append("🚫 Никогда не переводите деньги незнакомцам для 'инвестиций', даже если они показывают скриншоты заработка")
 
         # General safety recommendations
         recommendations.append("🤝 Встречайтесь лично перед любыми финансовыми операциями")

@@ -9,35 +9,41 @@ import warnings
 from typing import Dict, List, Optional
 from backend.models.schemas import ListingData, AnalysisResult, RedFlag, RiskLevel
 from backend.config import get_settings
+from backend.services.api_key_manager import ApiKeyManager
 
-# Suppress deprecation warning
+# Suppress deprecation warning for old SDK
 warnings.filterwarnings("ignore", category=FutureWarning)
-import google.generativeai as genai
 from loguru import logger
 
 
 class GeminiAnalyzer:
     """
-    NLP/LLM Analyzer using Google Gemini
-    
-    This module is the PRIMARY AI component of the pipeline.
-    It performs:
-    - Context understanding of messages
-    - Manipulation and pressure detection
-    - Price/condition extraction
-    - Scam pattern identification
+    NLP/LLM Analyzer using Google Gemini (google-genai SDK).
+
+    Uses the new google.genai SDK which is actively maintained.
+    Supports multiple API keys with automatic round-robin rotation and
+    per-key cooldown when a 429 / quota error is received.
     """
+
+    MODEL_NAME = "gemini-2.0-flash"
 
     def __init__(self):
         settings = get_settings()
-        self.api_key = settings.google_api_key
-        
-        if not self.api_key:
-            raise ValueError("Google API key not configured")
-        
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-flash-lite-latest')
-        logger.info("Gemini NLP Analyzer initialized")
+        keys = settings.get_google_api_keys()
+
+        if not keys:
+            raise ValueError("No Google API key(s) configured")
+
+        self._key_manager = ApiKeyManager(keys)
+        self._keys = keys
+
+        logger.info(
+            f"Gemini NLP Analyzer initialized with {self._key_manager.key_count()} key(s)"
+        )
+
+    def _get_client(self, key: str):
+        from google import genai
+        return genai.Client(api_key=key)
 
     async def analyze(self, listing: ListingData) -> AnalysisResult:
         """
@@ -72,199 +78,122 @@ class GeminiAnalyzer:
         if is_forwarded:
             text = f"[Пересланное сообщение]\n\n{text}"
         
-        try:
-            # Run Gemini analysis
-            prompt = self._build_nlp_prompt(text)
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, lambda: self.model.generate_content(prompt))
-            
-            # Parse response
-            result_text = response.text
-            logger.debug(f"Gemini response: {result_text[:500]}")
-            
-            # Extract JSON from response
-            json_data = self._extract_json(result_text)
-            
-            if json_data:
-                return self._parse_gemini_response(json_data)
-            else:
+        prompt = self._build_nlp_prompt(text)
+        loop = asyncio.get_event_loop()
+
+        # Retry across all available keys on rate-limit or timeout errors
+        last_exc: Optional[Exception] = None
+        for attempt in range(self._key_manager.key_count()):
+            key = self._key_manager.next_key()
+            try:
+                client = self._get_client(key)
+
+                def _call():
+                    from google.genai import types
+                    return client.models.generate_content(
+                        model=self.MODEL_NAME,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(temperature=0.1),
+                    )
+
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(None, _call),
+                    timeout=15.0,
+                )
+                result_text = response.text or ""
+                logger.debug(f"Gemini response (key ...{key[-6:]}): {result_text[:500]}")
+
+                json_data = self._extract_json(result_text)
+                if json_data:
+                    return self._parse_gemini_response(json_data)
+
                 logger.warning("Failed to parse Gemini JSON response")
-                return self._fallback_analysis(listing)
-                
-        except Exception as e:
-            logger.error(f"Gemini NLP analysis error: {e}")
-            return self._fallback_analysis(listing)
+                return await self._fallback_analysis(listing)
+
+            except asyncio.TimeoutError:
+                logger.warning(f"Gemini timeout on key ...{key[-6:]} (attempt {attempt + 1}). Rotating.")
+                self._key_manager.mark_exhausted(key, cooldown=10.0)
+                last_exc = asyncio.TimeoutError()
+                continue
+            except Exception as exc:
+                if self._key_manager.is_rate_limit_error(exc):
+                    err_str = str(exc).lower()
+                    # Daily quota hit — no point trying other keys (same project)
+                    if "per_day" in err_str or "perday" in err_str or "daily" in err_str or "per day" in err_str:
+                        logger.warning(f"Daily quota exhausted on key ...{key[-6:]} — skipping to fallback")
+                        return await self._fallback_analysis(listing)
+                    logger.warning(f"Rate limit on key ...{key[-6:]} (attempt {attempt + 1}). Rotating.")
+                    self._key_manager.mark_exhausted(key)
+                    last_exc = exc
+                    continue
+                logger.error(f"Gemini NLP analysis error: {exc}")
+                return await self._fallback_analysis(listing)
+
+        logger.error(f"All API keys exhausted after {self._key_manager.key_count()} attempt(s): {last_exc}")
+        return await self._fallback_analysis(listing)
 
     def _build_nlp_prompt(self, text: str) -> str:
         """
-        Build specialized NLP prompt for scam detection
+        Universal free-form scam detection prompt.
 
-        This prompt is designed using advanced prompt engineering techniques:
-        - Role-playing with specific expertise context
-        - Structured analytical framework (step-by-step reasoning)
-        - Clear examples of scam patterns
-        - Separation of extraction, analysis, and recommendation phases
-        - Constrained output format for reliable parsing
+        No hardcoded categories or keyword lists — the model reads the message,
+        reasons from first principles, and self-describes every finding.
         """
-        return f"""
-<role>
-Ты — ведущий эксперт по борьбе с мошенничеством с 15-летним опытом в:
-- Лингвистическом анализе мошеннических сообщений
-- Выявлении психологических манипуляций и социальной инженерии
-- Анализе поведенческих паттернов мошенников
-- Криминалистике текста (стилометрия, маркеры обмана)
+        return f"""Ты — система обнаружения мошенничества. Твоя задача: прочитать сообщение ниже и самостоятельно определить, является ли оно мошенническим, подозрительным или безопасным.
 
-Твоя задача — провести ГЛУБОКИЙ АНАЛИЗ предоставленного текста и выявить ВСЕ признаки мошенничества, используя систематический подход.
-</role>
+НЕ используй заранее заготовленные категории. Анализируй конкретное содержание: что именно написано, что от тебя хотят, какие эмоции и действия пытаются вызвать, какие несоответствия или аномалии ты замечаешь.
 
-<analytical_framework>
-АНАЛИЗИРУЙ ТЕКСТ ПО СЛЕДУЮЩЕЙ СТРУКТУРЕ (шаг за шагом):
+Проведи анализ в три шага (внутренне, не выводи их):
 
-ШАГ 1: ИЗВЛЕЧЕНИЕ ФАКТОВ
-Выяви и извлеки из текста:
-- Финансовые условия (цена, предоплата, депозит, способ оплаты)
-- Временные ограничения (дедлайны, срочность, "только сегодня")
-- Контактная информация (полнота, тип контактов)
-- Условия сделки (договор, документы, встреча)
-- Информация о товаре/услуге (детали, фото, описание)
-- Каналы коммуникации (только мессенджеры, блокировка звонков)
+1. ЧТО ПРОИСХОДИТ — определи суть сообщения своими словами: кто пишет, что предлагает или требует, какова цель отправителя.
 
-ШАГ 2: ВЫЯВЛЕНИЕ МАРКЕРОВ МОШЕННИЧЕСТВА
-Проверь текст на наличие следующих паттернов:
+2. ЧТО НАСТОРАЖИВАЕТ — найди конкретные фразы, структуры, требования или несоответствия, которые указывают на обман. Каждый флаг должен быть привязан к реальному фрагменту текста.
 
-🔴 КРИТИЧЕСКИЕ МАРКЕРЫ (вес 9-10):
-- Требование предоплаты/аванса до оказания услуги
-- Перевод денег "на карту" без договора
-- Отсутствие возможности личной встречи/просмотра
-- Блокировка обратной связи (только текст, нет звонков)
-- Угрозы, шантаж, давление
-- Фейковые документы/поддельные профили
+3. ИТОГОВАЯ ОЦЕНКА — на основе найденного выставь риск-скор и сформулируй рекомендации для получателя сообщения.
 
-🟠 СЕРЬЕЗНЫЕ МАРКЕРЫ (вес 6-8):
-- Аномально низкая цена (ниже рынка на 30%+)
-- Срочность и давление времени ("только сейчас", "через час уеду")
-- Только мессенджеры для связи (нет телефона/email)
-- Отсутствие конкретики в описании (размытые формулировки)
-- Грамматические ошибки в официальном контексте
-- Слишком короткие/поверхностные описания
-- Пересланное сообщение из неизвестного источника
+Правила оценки риска:
+- 0–20: сообщение выглядит нормально, явных признаков обмана нет
+- 21–40: есть мелкие подозрительные моменты, но в целом безопасно
+- 41–65: несколько тревожных сигналов, нужна осторожность
+- 66–85: явные признаки мошенничества
+- 86–100: практически наверняка мошенничество — опасно
 
-🟡 ПРЕДУПРЕЖДАЮЩИЕ МАРКЕРЫ (вес 3-5):
-- Неполная контактная информация
-- Общие фразы без деталей ("хорошее состояние", "все включено")
-- Отсутствие документации (нет чеков, договора, акта)
-- Подозрительные ссылки или сокращенные URL
-- Неестественный стиль общения (слишком формальный/дружелюбный)
+Верни ТОЛЬКО валидный JSON без markdown-обёрток, без пояснений до и после. Все строки на русском языке.
 
-ШАГ 3: АНАЛИЗ МАНИПУЛЯТИВНЫХ ТЕХНИК
-Определи, какие психологические тактики используются:
-- СРОЧНОСТЬ: Давление временем, искусственные дедлайны
-- ЖАДНОСТЬ: Слишком выгодные условия, "легкие деньги"
-- СТРАХ: Угрозы потери, запугивание последствиями
-- АВТОРИТЕТ: Ссылки на организации, статус, должности
-- ЖАЛОСТЬ: Эмоциональные истории, просьбы о помощи
-- ЭКСКЛЮЗИВНОСТЬ: "Только для вас", секретные предложения
-- СОЦИАЛЬНОЕ ДОКАЗАТЕЛЬСТВО: Фейковые отзывы, рейтинги
-
-ШАГ 4: ОПРЕДЕЛЕНИЕ ТИПА МОШЕННИЧЕСТВА
-Классифицируй по одной из категорий:
-- "rental_scam" — аренда/продажа недвижимости (фейковые объявления)
-- "fake_seller" — поддельный продавец (товаров нет, требует предоплату)
-- "investment_scam" — инвестиции, финансовые пирамиды
-- "romance_scam" — романтическое мошенничество
-- "phishing" — фишинг, кража персональных данных
-- "job_scam" — фейковые вакансии, работа за предоплату
-- "tech_support" — фейковая техподдержка
-- "charity_scam" — фальшивая благотворительность
-- "advanced_fee" — мошенничество с авансовым платежом
-- "impersonation" — выдача себя за другое лицо
-- "none" — нет признаков мошенничества
-
-ШАГ 5: ОЦЕНКА РИСКА (0-100)
-Используй следующую шкалу:
-- 0-20: БЕЗОПАСНО — нет признаков мошенничества, все прозрачно
-- 21-40: НИЗКИЙ РИСК — мелкие недочеты, но в целом безопасно
-- 41-60: СРЕДНИЙ РИСК — несколько подозрительных признаков, нужна осторожность
-- 61-80: ВЫСОКИЙ РИСК — явные признаки мошенничества, не рекомендуется продолжение
-- 81-100: КРИТИЧЕСКИЙ РИСК — почти определенно мошенничество, опасно
-
-При оценке учитывай:
-- Количество выявленных маркеров
-- Их серьезность (severity)
-- Комбинацию нескольких тактик
-- Контекст и правдоподобие ситуации
-</analytical_framework>
-
-<output_constraints>
-ВАЖНО: Ты должен вернуть ответ СТРОГО в формате JSON.
-
-ПРАВИЛА ФОРМАТИРОВАНИЯ:
-1. НЕ добавляй markdown (```json или ```)
-2. НЕ добавляй пояснений до или после JSON
-3. ВСЕ поля должны присутствовать (обязательные ключи)
-4. Числа должны быть валидными (не строки!)
-5. Массивы не должны быть пустыми — минимум 1 элемент или "none"
-6. Строки должны быть на РУССКОМ языке
-7. Описание каждого red_flag должно быть КОНКРЕТНЫМ (не общие фразы!)
-
-ПРИМЕР ХОРОШЕГО red_flag.description:
-✅ "Требуется 100% предоплата на карту без договора — классическая схема мошенничества"
-❌ "Есть проблемы с оплатой"
-
-ПРИМЕР ХОРОШЕГО explanation:
-✅ "Обнаружены 3 критических маркера: предоплата без договора, отсутствие возможности просмотра, только WhatsApp. Цена на 60% ниже рынка. Давление срочности."
-❌ "Много подозрительных признаков"
-</output_constraints>
-
-<input_text>
-{text}
-</input_text>
-
-<json_output_template>
-Верни ответ в следующей структуре JSON (ЗАПОЛНИ ВСЕ ПОЛЯ):
-
+Формат ответа:
 {{
-  "risk_score": 75,
-  "scam_type": "rental_scam",
-  "manipulation_tactics": ["urgency", "greed"],
+  "risk_score": <число 0-100>,
+  "scam_type": "<краткое название типа угрозы своими словами, например: банковский фишинг, фейковый продавец, инвестиционная пирамида, романтическая ловушка, none>",
+  "manipulation_tactics": ["<тактика 1>", "<тактика 2>"],
   "extracted_info": {{
-    "price_mentioned": true,
-    "price_value": 500000,
-    "prepayment_requested": true,
-    "urgency_signals": true,
-    "contact_complete": false,
-    "suspicious_links": false,
-    "meeting_available": false,
-    "contract_offered": false,
-    "photos_mentioned": false
+    "prepayment_requested": <true/false>,
+    "urgency_signals": <true/false>,
+    "contact_complete": <true/false>,
+    "suspicious_links": <true/false>,
+    "meeting_available": <true/false>,
+    "contract_offered": <true/false>,
+    "impersonation_detected": <true/false>,
+    "credentials_requested": <true/false>
   }},
   "red_flags": [
     {{
-      "severity": 9,
-      "category": "prepayment",
-      "description": "Требуется полная предоплата на банковскую карту без заключения договора — это классическая схема мошенничества"
-    }},
-    {{
-      "severity": 8,
-      "category": "urgency",
-      "description": "Используется давление срочности ('только сегодня', 'через час уезжаю') чтобы помешать вам проверить информацию"
+      "severity": <1-10>,
+      "category": "<категория флага своими словами>",
+      "description": "<конкретная фраза из текста + объяснение почему это опасно>"
     }}
   ],
-  "confidence": 0.85,
-  "explanation": "Обнаружены множественные критические маркеры мошенничества: предоплата без договора, невозможность личной встречи, аномально низкая цена. Комбинация тактик срочности и жадности.",
+  "confidence": <0.0-1.0>,
+  "explanation": "<2-4 предложения: что именно обнаружено, почему опасно, на что обратить внимание>",
   "detailed_analysis": {{
-    "text_quality": "Низкое качество текста — много общих фраз, нет конкретики",
-    "price_analysis": "Цена на 60% ниже рыночной, что является серьезным предупреждающим сигналом",
-    "contact_analysis": "Контактная информация неполная — только мессенджеры, нет телефона или email",
-    "psychological_pressure": "Высокое давление — используются тактики срочности и исключения"
+    "sender_intent": "<цель отправителя, определённая самостоятельно>",
+    "psychological_pressure": "<описание давления если есть, иначе none>",
+    "anomalies": "<конкретные несоответствия или странности в тексте>",
+    "verdict": "<итоговый вывод одним предложением>"
   }}
 }}
-</json_output_template>
 
-Помни: от качества твоего анализа зависит финансовая безопасность человека. Будь максимально внимателен, объективен и конкретен.
-
-СГЕНЕРИРУЙ JSON ОТВЕТ СЕЙЧАС:
-"""
+СООБЩЕНИЕ ДЛЯ АНАЛИЗА:
+{text}"""
 
     def _extract_json(self, text: str) -> Optional[Dict]:
         """Extract JSON from Gemini response"""
@@ -284,8 +213,8 @@ class GeminiAnalyzer:
         return None
 
     def _parse_gemini_response(self, data: Dict) -> AnalysisResult:
-        """Parse structured Gemini response into AnalysisResult"""
-        risk_score = min(max(data.get("risk_score", 50), 0), 100)
+        """Parse free-form Gemini response into AnalysisResult."""
+        risk_score = min(max(int(data.get("risk_score", 50)), 0), 100)
         scam_type = data.get("scam_type", "unknown")
         manipulation_tactics = data.get("manipulation_tactics", [])
         extracted_info = data.get("extracted_info", {})
@@ -293,35 +222,28 @@ class GeminiAnalyzer:
         explanation = data.get("explanation", "")
         detailed_analysis = data.get("detailed_analysis", {})
 
-        # Build red flags
+        # Build red flags directly from AI output — no hardcoded mapping
         red_flags = []
         for flag_data in data.get("red_flags", []):
+            desc = flag_data.get("description", "").strip()
+            if not desc:
+                continue
             red_flags.append(RedFlag(
-                severity=min(max(flag_data.get("severity", 5), 1), 10),
-                category=flag_data.get("category", "unknown"),
-                description=flag_data.get("description", "")
+                severity=min(max(int(flag_data.get("severity", 5)), 1), 10),
+                category=flag_data.get("category", "ai_detected"),
+                description=desc,
             ))
 
-        # Add flags for manipulation tactics (with enhanced severity based on context)
-        if manipulation_tactics and "none" not in manipulation_tactics:
-            tactic_names = {
-                "urgency": "Срочность и давление времени — вас торопят, чтобы вы не успели проверить информацию",
-                "greed": "Манипуляция жадностью — предлагают слишком выгодные условия, чтобы затмить разум",
-                "fear": "Запугивание и страх — используют ваши страхи для принятия необдуманных решений",
-                "authority": "Поддельный авторитет — ссылаются на организации/статус для внушения доверия",
-                "sympathy": "Манипуляция на жалость — давят на эмоции, чтобы получить деньги",
-                "exclusivity": "Искусственная эксклюзивность — создают ощущение уникального предложения",
-                "social_proof": "Поддельные отзывы — используют фейковые отзывы для доверия"
-            }
+        # Add manipulation tactics as extra flags if AI named them
+        if manipulation_tactics and "none" not in [t.lower() for t in manipulation_tactics]:
             for tactic in manipulation_tactics:
-                if tactic in tactic_names:
+                if isinstance(tactic, str) and tactic.strip():
                     red_flags.append(RedFlag(
                         severity=7,
                         category="manipulation",
-                        description=f"🧠 Обнаружена тактика манипуляции: {tactic_names[tactic]}"
+                        description=f"🧠 Тактика манипуляции: {tactic}",
                     ))
 
-        # Build details with enhanced information
         details = {
             "scam_type": scam_type,
             "manipulation_tactics": manipulation_tactics,
@@ -329,7 +251,7 @@ class GeminiAnalyzer:
             "confidence": confidence,
             "explanation": explanation,
             "detailed_analysis": detailed_analysis,
-            "module": "nlp_llm"
+            "module": "nlp_llm",
         }
 
         return AnalysisResult(
@@ -339,7 +261,7 @@ class GeminiAnalyzer:
             recommendations=self._generate_nlp_recommendations(
                 risk_score, scam_type, manipulation_tactics, extracted_info, detailed_analysis
             ),
-            details=details
+            details=details,
         )
 
     def _generate_nlp_recommendations(
@@ -348,91 +270,54 @@ class GeminiAnalyzer:
         scam_type: str,
         manipulation_tactics: List[str],
         extracted_info: Dict,
-        detailed_analysis: Dict = None
+        detailed_analysis: Dict = None,
     ) -> List[str]:
-        """
-        Generate NLP-specific recommendations based on AI analysis
-
-        Enhanced to use detailed_analysis from the new prompt structure
-        """
-        recommendations = []
+        """Generate actionable recommendations from AI free-form analysis."""
+        recommendations: List[str] = []
         detailed = detailed_analysis or {}
 
-        # Risk level based recommendations
-        if risk_score >= 80:
-            recommendations.append("🚨 КРИТИЧЕСКИЙ РИСК! Это почти определенно мошенничество")
-            recommendations.append("🛑 НЕМЕДЛЕННО прекратите общение с этим человеком")
-        elif risk_score >= 60:
-            recommendations.append("🚨 ВЫСОКИЙ РИСК! Это сообщение с высокой вероятностью мошенническое")
-            recommendations.append("⛔ Не переводите деньги и не предоставляйте личные данные")
-        elif risk_score >= 40:
-            recommendations.append("⚠️ СРЕДНИЙ РИСК! Подозрительное сообщение — будьте крайне осторожны")
-            recommendations.append("🔍 Проведите дополнительную проверку перед любыми действиями")
+        # Base risk verdict
+        if risk_score >= 86:
+            recommendations.append("🚨 КРИТИЧЕСКИЙ РИСК — почти наверняка мошенничество. Прекратите общение немедленно.")
+        elif risk_score >= 66:
+            recommendations.append("🚨 ВЫСОКИЙ РИСК — явные признаки обмана. Не переводите деньги и не давайте данные.")
+        elif risk_score >= 41:
+            recommendations.append("⚠️ СРЕДНИЙ РИСК — есть подозрительные моменты. Проверьте перед любыми действиями.")
         else:
-            recommendations.append("✅ Нет явных признаков мошенничества, но оставайтесь бдительны")
+            recommendations.append("✅ Признаков мошенничества не обнаружено, но оставайтесь бдительны.")
 
-        # Prepayment warnings (CRITICAL)
-        if extracted_info.get("prepayment_requested"):
-            if not extracted_info.get("contract_offered"):
-                recommendations.append("💳 ТРЕБУЕТСЯ ПРЕДОПЛАТА БЕЗ ДОГОВОРА — это классическая схема мошенничества!")
-            else:
-                recommendations.append("💳 Запрошена предоплата — убедитесь, что есть официальный договор")
+        # Verdict from AI if available
+        verdict = detailed.get("verdict", "")
+        if verdict and verdict.lower() != "none":
+            recommendations.append(f"🔎 {verdict}")
 
-        # Meeting/Viewing availability
-        if not extracted_info.get("meeting_available", True):
-            recommendations.append("👁️ Невозможно посмотреть товар/жилье лично — это очень подозрительно")
+        # Sender intent from AI
+        intent = detailed.get("sender_intent", "")
+        if intent and intent.lower() != "none" and risk_score >= 40:
+            recommendations.append(f"🎯 Цель отправителя: {intent}")
 
-        # Manipulation tactics warnings
-        if "urgency" in manipulation_tactics:
-            recommendations.append("⏰ Вас торопят! Мошенники используют срочность, чтобы вы не успели проверить информацию. Остановитесь и подумайте.")
-
-        if "greed" in manipulation_tactics:
-            recommendations.append("💰 Предложены слишком выгодные условия — это намеренная манипуляция. Проверьте рыночные цены.")
-
-        if "fear" in manipulation_tactics:
-            recommendations.append("😰 Вас пытаются запугать — это признак психологической манипуляции. Не принимайте решения под давлением.")
-
-        if "sympathy" in manipulation_tactics:
-            recommendations.append("💔 Давят на жалость — эмоциональная манипуляция. Отделите эмоции от фактов.")
-
-        if "authority" in manipulation_tactics:
-            recommendations.append("🎭 Ссылаются на авторитетные организации — проверьте эту информацию независимо.")
-
-        # Contact information
-        if not extracted_info.get("contact_complete"):
-            recommendations.append("📞 Неполные контактные данные — запросите телефон или email для проверки")
-
-        # Suspicious links
+        # Specific dangers from extracted_info
+        if extracted_info.get("credentials_requested"):
+            recommendations.append("🔑 Не вводите логин, пароль или коды из SMS — это кража аккаунта.")
+        if extracted_info.get("prepayment_requested") and not extracted_info.get("contract_offered"):
+            recommendations.append("💳 Предоплата без договора — классическая схема. Откажитесь.")
         if extracted_info.get("suspicious_links"):
-            recommendations.append("🔗 Обнаружены подозрительные ссылки — НЕ переходите по ним, это может быть фишинг")
+            recommendations.append("🔗 Не переходите по ссылкам из этого сообщения — возможен фишинг.")
+        if extracted_info.get("impersonation_detected"):
+            recommendations.append("🎭 Отправитель выдаёт себя за другое лицо или организацию. Проверьте через официальные каналы.")
+        if not extracted_info.get("meeting_available", True) and risk_score >= 40:
+            recommendations.append("👁️ Отказ от личной встречи — очень подозрительно.")
 
-        # Price analysis
-        if detailed.get("price_analysis"):
-            recommendations.append(f"💵 {detailed['price_analysis']}")
+        # Psychological pressure note
+        pressure = detailed.get("psychological_pressure", "")
+        if pressure and pressure.lower() not in ("none", "нет", "отсутствует"):
+            recommendations.append(f"😰 Психологическое давление: {pressure}")
 
-        # Text quality
-        if detailed.get("text_quality") and "низк" in detailed["text_quality"].lower():
-            recommendations.append("📝 Качество текста низкий — мало конкретики, много общих фраз")
+        # Anomalies noted by AI
+        anomalies = detailed.get("anomalies", "")
+        if anomalies and anomalies.lower() not in ("none", "нет", "отсутствуют"):
+            recommendations.append(f"⚠️ Аномалии в тексте: {anomalies}")
 
-        # Psychological pressure
-        if detailed.get("psychological_pressure") and "высок" in detailed["psychological_pressure"].lower():
-            recommendations.append("🧠 Обнаружено высокое психологическое давление — это серьезный признак мошенничества")
-
-        # Scam type specific recommendations
-        scam_type_advice = {
-            "rental_scam": "🏠 Фейковое объявление об аренде — проверьте объект лично перед оплатой",
-            "fake_seller": "🛒 Поддельный продавец — товар может не существовать. Требуйте встречи.",
-            "investment_scam": "📈 Финансовая пирамида — не инвестируйте без проверки лицензии ЦБ",
-            "phishing": "🎣 Фишинг — не переходите по ссылкам и не вводите личные данные",
-            "job_scam": "💼 Фейковая вакансия — не платите за трудоустройство",
-            "romance_scam": "💔 Романтическое мошенничество — не переводите деньги людям из интернета",
-            "advanced_fee": "💸 Мошенничество с авансом — не платите заранее без гарантий",
-        }
-
-        if scam_type in scam_type_advice and scam_type != "none":
-            recommendations.append(scam_type_advice[scam_type])
-
-        # Limit to most important recommendations (top 8)
         return recommendations[:8]
 
     def _calculate_risk_level(self, risk_score: int) -> RiskLevel:
@@ -444,7 +329,7 @@ class GeminiAnalyzer:
         else:
             return RiskLevel.HIGH
 
-    def _fallback_analysis(self, listing: ListingData) -> AnalysisResult:
+    async def _fallback_analysis(self, listing: ListingData) -> AnalysisResult:
         """Fallback when Gemini is unavailable"""
         logger.warning("Using fallback NLP analysis")
         text = (listing.description or listing.title or "").lower()

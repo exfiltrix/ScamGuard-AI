@@ -41,6 +41,7 @@ TRANSLATIONS = {
         "menu_logs": "📋 Логи бота",
         "menu_help": "❓ Помощь",
         "menu_about": "ℹ️ О проекте",
+        "menu_train_patterns": "🧠 Обучить на новом паттерне",
         "main_menu_title": "🏠 <b>Главное меню</b>\n\nВыберите действие:",
         "start_welcome": """🛡️ <b>Добро пожаловать в ScamGuard AI, {user_name}!</b>
 
@@ -160,6 +161,11 @@ ScamGuard AI помогает выявлять онлайн-мошенничес
         "check_more_button": "Проверить ещё",
         "home_button": "Главная",
         "deep_offer": "Хотите узнать больше?\n\nЗапустите полный AI анализ с Gemini:\n- Глубокое понимание контекста\n- Определение тактик манипуляции\n- Анализ фото (если есть)\n- Точный вердикт за 10-15 секунд",
+        "train_patterns_title": "🧠 <b>Обучение новым паттернам</b>\n\nПоделитесь найденными мошенническими сообщениями, и система научится распознавать аналогичные случаи!\n\n<b>Что отправить:</b>\n• Исходное мошеннческое сообщение\n• Или скопированный текст\n\n<b>Система автоматически:</b>\n✅ Извлечет ключевые фразы\n✅ Добавит в базу паттернов\n✅ Улучшит обнаружение похожих скамов\n\nОтправьте текст или перешлите сообщение:",
+        "train_patterns_severity": "Выберите серьезность найденного мошенничества:\n\n🔴 Высокая (9/10) - явное мошенничество\n🟡 Средняя (7/10) - подозрительно\n🟢 Низкая (5/10) - потенциальный риск",
+        "train_patterns_type": "Выберите тип мошенничества:",
+        "train_patterns_success": "✅ <b>Спасибо!</b>\n\nНовый паттерн добавлен в базу:\n• Тип: {scam_type}\n• Серьезность: {severity}/10\n• Ключевые фразы: {keywords}\n\nСистема будет лучше обнаруживать подобные случаи!",
+        "train_patterns_error": "❌ Ошибка при обучении:\n{error}",
     },
     "en": {
         "menu_analyze": "🔍 Check message",
@@ -344,6 +350,13 @@ class AnalysisStates(StatesGroup):
     waiting_deep_confirmation = State()  # Waiting for user to confirm deep analysis
 
 
+class TrainPatternStates(StatesGroup):
+    """States for pattern training flow"""
+    waiting_for_text = State()           # Waiting for scam text
+    waiting_for_severity = State()       # Waiting for severity selection
+    waiting_for_type = State()           # Waiting for scam type selection
+
+
 # Опасные расширения файлов
 DANGEROUS_FILE_EXTENSIONS = {
     # Исполняемые файлы (ВЫСОКИЙ РИСК)
@@ -399,6 +412,9 @@ def create_main_menu(lang: str = "ru"):
         [
             InlineKeyboardButton(text=t(lang, "menu_my_stats"), callback_data="my_stats"),
             InlineKeyboardButton(text=t(lang, "menu_global_stats"), callback_data="global_stats")
+        ],
+        [
+            InlineKeyboardButton(text=t(lang, "menu_train_patterns"), callback_data="train_patterns"),
         ],
         [
             InlineKeyboardButton(text=t(lang, "menu_logs"), callback_data="bot_logs"),
@@ -778,6 +794,135 @@ async def callback_bot_logs(callback: types.CallbackQuery):
             "❌ Ошибка при чтении логов",
             reply_markup=create_main_menu()
         )
+
+
+@dp.callback_query(F.data == "train_patterns")
+async def callback_train_patterns(callback: types.CallbackQuery, state: FSMContext):
+    """Handle train patterns button"""
+    await callback.answer()
+    await state.set_state(TrainPatternStates.waiting_for_text)
+    await callback.message.answer(
+        t("ru", "train_patterns_title"),
+        parse_mode="HTML"
+    )
+
+
+@dp.message(TrainPatternStates.waiting_for_text)
+async def process_train_text(message: Message, state: FSMContext):
+    """Process scam text and ask for severity"""
+    if not message.text or len(message.text) < 20:
+        await message.answer("❌ Пожалуйста, отправьте текст мошеннического сообщения (минимум 20 символов)")
+        return
+    
+    await state.update_data(scam_text=message.text)
+    
+    # Ask for severity
+    severity_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔴 Высокая (9)", callback_data="severity_9")
+        ],
+        [
+            InlineKeyboardButton(text="🟡 Средняя (7)", callback_data="severity_7")
+        ],
+        [
+            InlineKeyboardButton(text="🟢 Низкая (5)", callback_data="severity_5")
+        ],
+        [
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_train")
+        ]
+    ])
+    
+    await state.set_state(TrainPatternStates.waiting_for_severity)
+    await message.answer(
+        t("ru", "train_patterns_severity"),
+        parse_mode="HTML",
+        reply_markup=severity_keyboard
+    )
+
+
+@dp.callback_query(TrainPatternStates.waiting_for_severity, F.data.startswith("severity_"))
+async def process_severity(callback: types.CallbackQuery, state: FSMContext):
+    """Process severity selection and ask for scam type"""
+    await callback.answer()
+    
+    severity = int(callback.data.split("_")[1])
+    await state.update_data(severity=severity)
+    
+    # Ask for scam type
+    type_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Аренда/продажа", callback_data="type_rental_scam")],
+        [InlineKeyboardButton(text="💰 Инвестиции", callback_data="type_investment_scam")],
+        [InlineKeyboardButton(text="❤️ Романтика", callback_data="type_romance_scam")],
+        [InlineKeyboardButton(text="🔒 Фишинг", callback_data="type_bank_phishing")],
+        [InlineKeyboardButton(text="👔 Работа", callback_data="type_job_scam")],
+        [InlineKeyboardButton(text="🎁 Розыгрыши", callback_data="type_fake_prize")],
+        [InlineKeyboardButton(text="💳 Кража данных", callback_data="type_phishing")],
+        [InlineKeyboardButton(text="❓ Другое", callback_data="type_other_scam")],
+    ])
+    
+    await state.set_state(TrainPatternStates.waiting_for_type)
+    await callback.message.answer(
+        t("ru", "train_patterns_type"),
+        parse_mode="HTML",
+        reply_markup=type_keyboard
+    )
+
+
+@dp.callback_query(TrainPatternStates.waiting_for_type, F.data.startswith("type_"))
+async def process_scam_type(callback: types.CallbackQuery, state: FSMContext):
+    """Process scam type and train the model"""
+    await callback.answer("🧠 Обучаю систему...")
+    
+    scam_type = callback.data.split("type_")[1]
+    
+    data = await state.get_data()
+    scam_text = data.get('scam_text', '')
+    severity = data.get('severity', 7)
+    
+    try:
+        # Import embedding analyzer and train
+        from backend.services.embedding_analyzer import EmbeddingAnalyzer
+        analyzer = EmbeddingAnalyzer()
+        
+        # Train on new pattern
+        patterns = await analyzer.train_new_patterns(
+            examples=[scam_text],
+            severity=severity,
+            pattern_type=scam_type
+        )
+        
+        if patterns:
+            pattern = patterns[0]
+            keywords_str = ", ".join(pattern.get('keywords', [])[:3])
+            
+            success_msg = t("ru", "train_patterns_success",
+                scam_type=scam_type,
+                severity=severity,
+                keywords=keywords_str
+            )
+            await callback.message.answer(success_msg, parse_mode="HTML", reply_markup=create_main_menu())
+            
+            logger.info(f"User {callback.from_user.id} trained new pattern: {scam_type} (severity={severity})")
+        else:
+            await callback.message.answer(
+                "⚠️ Паттерн не был добавлен (возможно, дублируется)",
+                reply_markup=create_main_menu()
+            )
+    
+    except Exception as e:
+        logger.error(f"Error training pattern: {e}")
+        error_msg = t("ru", "train_patterns_error", error=str(e))
+        await callback.message.answer(error_msg, parse_mode="HTML", reply_markup=create_main_menu())
+    
+    await state.clear()
+
+
+@dp.callback_query(F.data == "cancel_train")
+async def cancel_train(callback: types.CallbackQuery, state: FSMContext):
+    """Cancel pattern training"""
+    await callback.answer()
+    await state.clear()
+    await callback.message.answer("❌ Обучение отменено", reply_markup=create_main_menu())
 
 
 @dp.message(Command("cancel"))
@@ -2224,11 +2369,32 @@ async def callback_deep_analysis(callback: types.CallbackQuery):
 
 
 async def on_startup():
-    """Actions on bot startup"""
+    """Actions on bot startup with retry logic"""
     logger.info("=" * 50)
     logger.info("ScamGuard AI Telegram Bot Starting...")
     logger.info("=" * 50)
-    logger.info(f"Bot username: @{(await bot.get_me()).username}")
+    
+    # Try to get bot info with retries (network may be temporarily unavailable)
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            me = await asyncio.wait_for(bot.get_me(), timeout=5.0)
+            logger.info(f"Bot username: @{me.username}")
+            break
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout getting bot info (attempt {attempt}/{max_retries})")
+            if attempt < max_retries:
+                await asyncio.sleep(2)
+            else:
+                logger.error("Could not get bot info after retries. Continuing anyway...")
+        except Exception as e:
+            logger.warning(f"Error getting bot info (attempt {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                await asyncio.sleep(2)
+            else:
+                logger.error(f"Could not connect to Telegram API: {e}")
+                logger.error("Make sure you have internet access and TELEGRAM_BOT_TOKEN is correct")
+    
     logger.info(f"API URL: {API_URL}")
     logger.info("Bot is ready to protect users! 🛡️")
     logger.info("=" * 50)

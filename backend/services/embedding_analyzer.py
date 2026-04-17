@@ -7,6 +7,9 @@ from typing import List, Tuple, Dict, Optional
 from backend.models.schemas import RedFlag
 from loguru import logger
 import re
+import json
+from pathlib import Path
+from collections import Counter
 
 
 # Minimal scam pattern database (15 patterns)
@@ -232,6 +235,74 @@ class EmbeddingAnalyzer:
         )
         
         return min(similarity, 1.0)
+
+    async def train_new_patterns(self, examples: List[str], severity: int = 7, pattern_type: str = 'other_scam') -> List[dict]:
+        """
+        Инкрементально добавляет новые паттерны мошенничества на основе предоставленных примеров.
+        
+        Алгоритм (простой MVP):
+        - Извлекает биграмы/триграммы и выбирает наиболее частые фразы
+        - Формирует запись паттерна: text, type, severity, keywords
+        - Добавляет в in-memory базу и сохраняет в data/scam_patterns.json
+        - Возвращает список добавленных паттернов
+        """
+        patterns = []
+        patterns_path = Path(__file__).parent.parent / 'data' / 'scam_patterns.json'
+
+        for text in examples:
+            txt = (text or '').strip()
+            if not txt:
+                continue
+
+            # Простая экстракция n-gram'ов (2,3)
+            words = re.findall(r"[а-яёa-z]+", txt.lower())
+            ngrams = []
+            for n in (2, 3):
+                for i in range(len(words) - n + 1):
+                    ng = ' '.join(words[i:i+n])
+                    if len(ng) >= 6:
+                        ngrams.append(ng)
+
+            counts = Counter(ngrams)
+            top_phrases = [p for p, _ in counts.most_common(3)]
+
+            # Fallback: возьмём первые слова если ngrams пуст
+            if not top_phrases:
+                top_phrases = words[:3]
+
+            pattern = {
+                'text': txt if len(txt) <= 300 else txt[:300],
+                'type': pattern_type,
+                'severity': int(severity),
+                'keywords': top_phrases
+            }
+
+            # Добавить в память
+            self.scam_database.append(pattern)
+            patterns.append(pattern)
+
+        # Сохранить на диск (без дублирования по exact text)
+        try:
+            if patterns_path.exists():
+                with open(patterns_path, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+            else:
+                existing = []
+
+            # Filter duplicates (по text)
+            existing_texts = {p.get('text') for p in existing}
+            to_append = [p for p in patterns if p.get('text') not in existing_texts]
+            if to_append:
+                existing.extend(to_append)
+                with open(patterns_path, 'w', encoding='utf-8') as f:
+                    json.dump(existing, f, ensure_ascii=False, indent=2)
+                logger.info(f"Saved {len(to_append)} new patterns to {patterns_path}")
+            else:
+                logger.info("No new patterns to save (duplicates skipped)")
+        except Exception as e:
+            logger.error(f"Error saving patterns: {e}")
+
+        return patterns
 
 
 # Export for compatibility

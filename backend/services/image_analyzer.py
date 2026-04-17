@@ -40,7 +40,7 @@ class ImageAnalyzer:
         settings = get_settings()
         if settings.google_api_key:
             genai.configure(api_key=settings.google_api_key)
-            self.vision_model = genai.GenerativeModel('gemini-flash-lite-latest')
+            self.vision_model = genai.GenerativeModel('gemini-2.0-flash')
             self.gemini_available = True
             logger.info("Gemini Vision initialized")
         else:
@@ -170,11 +170,14 @@ class ImageAnalyzer:
 """
                 # Send image to Gemini
                 loop = asyncio.get_event_loop()
-                
+
                 def call_gemini():
                     return self.vision_model.generate_content([prompt, img_bytes])
-                
-                response = await loop.run_in_executor(None, call_gemini)
+
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(None, call_gemini),
+                    timeout=15.0,
+                )
                 
                 # Parse response
                 import re
