@@ -66,7 +66,4 @@ temp/
 # Docker
 docker-compose.override.yml
 
-# Markdown documentation (not needed in repo)
-*.md
-AGENTS.md
 .codex
