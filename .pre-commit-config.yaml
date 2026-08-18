@@ -1,0 +1,44 @@
+# Pre-commit hooks for secret and code quality checks
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # Detect secrets and credentials before commit
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.0
+    hooks:
+      - id: gitleaks
+        name: Detect secrets (gitleaks)
+        description: Scan for hardcoded secrets, API keys, passwords
+        entry: gitleaks protect --verbose --log-level debug --staged
+        language: system
+        stages: [commit]
+        pass_filenames: false
+
+  # Basic file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+        name: Check large files (>1MB)
+      - id: check-merge-conflict
+        name: Check merge conflicts
+      - id: end-of-file-fixer
+        name: Fix end of file
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+      - id: check-yaml
+        args: ['--unsafe']
+        name: Check YAML syntax
+      - id: check-json
+        name: Check JSON syntax
+
+  # Python code formatting (optional)
+  - repo: https://github.com/psf/black
+    rev: 24.1.1
+    hooks:
+      - id: black
+        name: Format Python code (black)
+        language_version: python3
+        stages: [commit]
